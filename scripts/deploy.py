@@ -9,9 +9,19 @@ from pathlib import Path
 import yaml  # pip install pyyaml
 
 API_VERSION = "2025-07-01-preview"
+
 OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqual"}
-
-
+REQUIRED_FIELDS = ["name", "description", "severity", "query", "queryFrequency", "queryPeriod"]
+ 
+ 
+def mask(text: str, secrets: tuple) -> str:
+    """Remove identificadores sensíveis de qualquer texto antes de imprimir."""
+    for s in secrets:
+        if s:
+            text = text.replace(s, "***")
+    return text
+ 
+ 
 def to_iso(d) -> str:
     """'5m' -> 'PT5M', '1h' -> 'PT1H', '1d' -> 'P1D'"""
     m = re.fullmatch(r"(\d+)([mhd])", str(d).strip())
@@ -19,33 +29,45 @@ def to_iso(d) -> str:
         raise ValueError(f"duração inválida: {d}")
     n, u = m.groups()
     return f"P{n}D" if u == "d" else f"PT{n}{u.upper()}"
-
-
+ 
+ 
 def find_rule_file(rule: str):
     """Resolve o caminho do pack para o .yaml real, ignorando maiúsculas/minúsculas."""
     target = Path(rule).with_suffix("").as_posix().lower()
-    for p in Path("detections").rglob("*.y*ml"):
-        if p.suffix.lower() in (".yaml", ".yml") and p.with_suffix("").as_posix().lower() == target:
+    candidates = [p for p in Path("detections").rglob("*")
+                  if p.suffix.lower() in (".yaml", ".yml")]
+    for p in candidates:
+        if p.with_suffix("").as_posix().lower() == target:
             return p
-    # fallback: só pelo nome do arquivo
+    # fallback: só pelo nome do arquivo (precisa ser único)
     stem = Path(rule).stem.lower()
-    matches = [p for p in Path("detections").rglob("*")
-               if p.suffix.lower() in (".yaml", ".yml") and p.stem.lower() == stem]
+    matches = [p for p in candidates if p.stem.lower() == stem]
     return matches[0] if len(matches) == 1 else None
-
-
-def yaml_to_body(path: Path) -> tuple[str, dict]:
+ 
+ 
+def yaml_to_body(path: Path) -> dict:
     r = yaml.safe_load(path.read_text(encoding="utf-8"))
-    query = r["query"].strip()
+ 
+    missing = [k for k in REQUIRED_FIELDS if not r.get(k)]
+    if missing:
+        raise ValueError(f"campos obrigatórios ausentes: {', '.join(missing)}")
+ 
+    query = str(r["query"]).strip()
     if len(query) > 10000:
         raise ValueError(f"query com {len(query)} caracteres (limite ~10000)")
+ 
+    # técnicas pai (T####) e sub-técnicas (T####.###) vão em campos separados
     all_techs = [str(t).strip() for t in r.get("relevantTechniques", [])]
-    techniques = sorted({t.split(".")[0] for t in all_techs})   # T1110.003 -> T1110
-    sub_techniques = [t for t in all_techs if "." in t]  
-    body = {
+    for t in all_techs:
+        if not re.fullmatch(r"T\d{4}(\.\d{3})?", t):
+            raise ValueError(f"técnica inválida: '{t}'")
+    techniques = sorted({t.split(".")[0] for t in all_techs})
+    sub_techniques = [t for t in all_techs if "." in t]
+ 
+    return {
         "kind": "Scheduled",
         "properties": {
-            "displayName": r["name"],
+            "displayName": str(r["name"]).strip(),
             "description": str(r["description"]).strip(),
             "severity": r["severity"],
             "enabled": r.get("enabled", True),
@@ -64,32 +86,60 @@ def yaml_to_body(path: Path) -> tuple[str, dict]:
             "eventGroupingSettings": {"aggregationKind": "SingleAlert"},
         },
     }
-    return str(r["id"]), body
-
-
+ 
+ 
+def list_existing(sub: str, rg: str, ws: str) -> dict:
+    """Retorna {displayName em minúsculas: id da regra} do workspace."""
+    url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}"
+           f"/providers/Microsoft.OperationalInsights/workspaces/{ws}"
+           f"/providers/Microsoft.SecurityInsights/alertRules?api-version={API_VERSION}")
+    existing = {}
+    while url:
+        r = subprocess.run(["az", "rest", "--method", "get", "--url", url, "-o", "json"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            err = mask((r.stderr or r.stdout or ""), (sub, rg, ws))
+            sys.exit(f"ERRO ao listar regras existentes:\n{err[:800]}")
+        data = json.loads(r.stdout)
+        for item in data.get("value", []):
+            dn = item.get("properties", {}).get("displayName", "").strip().lower()
+            if dn:
+                if dn in existing:
+                    print(f"AVISO: há mais de uma regra com o nome '{dn}' no workspace")
+                existing[dn] = item["name"]
+        url = data.get("nextLink")
+    return existing
+ 
+ 
 def main():
     if len(sys.argv) < 2:
         sys.exit("uso: python scripts/deploy.py <cliente>")
     customer = sys.argv[1]
-
+ 
     cfg_path = Path("customers") / f"{customer}.json"
     if not cfg_path.exists():
         sys.exit(f"ERRO: {cfg_path} não existe")
     cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
     if "sentinel" not in cfg.get("platforms", {}):
         sys.exit(f"[{customer}] sem plataforma sentinel")
-
+ 
     sub = os.environ["AZURE_SUBSCRIPTION_ID"]
     rg = os.environ["RESOURCE_GROUP"]
     ws = os.environ["WORKSPACE"]
-
+    secrets = (sub, rg, ws)
+ 
+    # junta as regras de todos os packs do cliente
     rules = set()
     for pack_name in cfg["platforms"]["sentinel"]["content-packs"]:
         pack_path = Path("content-packs") / f"{pack_name}.json"
         if not pack_path.exists():
             sys.exit(f"ERRO: pack '{pack_name}' não existe")
         rules.update(json.loads(pack_path.read_text(encoding="utf-8"))["content"])
-
+ 
+    # regras que já existem no workspace: {nome: id}
+    existing = list_existing(sub, rg, ws)
+    seen_names = set()
+ 
     failed = []
     for rule in sorted(rules):
         f = find_rule_file(rule)
@@ -98,18 +148,29 @@ def main():
             failed.append(rule)
             continue
         try:
-            rule_id, body = yaml_to_body(f)
+            body = yaml_to_body(f)
         except Exception as e:
             print(f"[{customer}] ERRO em {f.name}: {e}")
             failed.append(f.name)
             continue
-
+ 
+        key = body["properties"]["displayName"].strip().lower()
+        if key in seen_names:
+            print(f"[{customer}] ERRO: nome duplicado '{key}' ({f.name})")
+            failed.append(f.name)
+            continue
+        seen_names.add(key)
+ 
+        # reaproveita o id da regra existente (mesmo nome); senão cria um novo
+        rule_id = existing.get(key) or str(uuid.uuid4())
+ 
         url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}"
                f"/providers/Microsoft.OperationalInsights/workspaces/{ws}"
                f"/providers/Microsoft.SecurityInsights/alertRules/{rule_id}"
                f"?api-version={API_VERSION}")
-
-        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as tmp:
+ 
+        with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False,
+                                         encoding="utf-8") as tmp:
             json.dump(body, tmp)
             tmp_path = tmp.name
         try:
@@ -119,20 +180,18 @@ def main():
                 capture_output=True, text=True)
         finally:
             os.unlink(tmp_path)
-
+ 
+        action = "UPDATE" if key in existing else "CREATE"
         if r.returncode == 0:
-            print(f"[{customer}] OK     {f.name}")
+            print(f"[{customer}] OK     {action} {f.name}")
         else:
-            err = (r.stderr or r.stdout or "").strip()
-            # remove identificadores do texto antes de imprimir
-            for secret in (sub, rg, ws):
-                err = err.replace(secret, "***")
+            err = mask((r.stderr or r.stdout or "").strip(), secrets)
             print(f"[{customer}] FALHOU {f.name}\n{err[:1500]}")
             failed.append(f.name)
-
+ 
     if failed:
         sys.exit(f"[{customer}] {len(failed)} regra(s) com erro")
-
-
+ 
+ 
 if __name__ == "__main__":
     main()
