@@ -1,21 +1,58 @@
-import json, subprocess, sys
+import json
+import os
+import subprocess
+import sys
 from pathlib import Path
 
-target = sys.argv[1] if len(sys.argv) > 1 else None   # ex: lab ou prod
-cust = json.loads(Path("customers.json").read_text())
+if len(sys.argv) < 2:
+    sys.exit("uso: python scripts/deploy.py <nome-do-cliente>")
 
-for env in cust["environments"]:
-    if target and env["name"] != target:
+customer = sys.argv[1]
+cfg_path = Path("customers") / f"{customer}.json"
+if not cfg_path.exists():
+    sys.exit(f"ERRO: {cfg_path} não existe")
+
+cfg = json.loads(cfg_path.read_text(encoding="utf-8"))
+if "sentinel" not in cfg.get("platforms", {}):
+    sys.exit(f"[{customer}] sem plataforma sentinel, nada a fazer")
+
+resource_group = os.environ["RESOURCE_GROUP"]
+workspace = os.environ["WORKSPACE"]
+
+# junta as regras de todos os packs do cliente
+rules = set()
+for pack_name in cfg["platforms"]["sentinel"]["content-packs"]:
+    pack_path = Path("content-packs") / f"{pack_name}.json"
+    if not pack_path.exists():
+        sys.exit(f"ERRO: pack '{pack_name}' não existe ({pack_path})")
+    pack = json.loads(pack_path.read_text(encoding="utf-8"))
+    rules.update(pack["content"])
+
+failed = []
+for rule in sorted(rules):
+    name = Path(rule).name
+    # prefere o ARM gerado em build/; senão usa o JSON original da regra
+    template = Path("build") / f"{name}.json"
+    if not template.exists():
+        template = Path(rule + ".json")
+    if not template.exists():
+        print(f"[{customer}] ERRO: template não encontrado para '{rule}'")
+        failed.append(name)
         continue
-    rules = set()
-    for pk in env["content-packs"]:
-        pack = json.loads(Path(f"content-packs/{pk}.json").read_text())
-        rules.update(pack["content"])
-    for r in sorted(rules):
-        print(f"[{env['name']}] deploy {r}")
-        subprocess.run([
-            "az", "deployment", "group", "create",
-            "--resource-group", env["resource_group"],
-            "--template-file", r + ".json",
-            "--parameters", f"workspace={env['workspace']}",
-        ], check=True)
+
+    r = subprocess.run([
+        "az", "deployment", "group", "create",
+        "--resource-group", resource_group,
+        "--template-file", str(template),
+        "--parameters", f"workspace={workspace}",
+        "--only-show-errors", "-o", "none",
+    ], capture_output=True, text=True)
+
+    if r.returncode == 0:
+        print(f"[{customer}] OK   {name}")
+    else:
+        print(f"[{customer}] FALHOU {name}")
+        failed.append(name)
+
+if failed:
+    sys.exit(f"[{customer}] {len(failed)} regra(s) com erro")
