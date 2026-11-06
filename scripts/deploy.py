@@ -14,6 +14,8 @@ API_VERSION = "2025-07-01-preview"
 OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqual"}
 REQUIRED_FIELDS = ["name", "description", "severity", "query", "queryFrequency", "queryPeriod"]
  
+# Mudanças nesses caminhos disparam deploy completo de todas as regras do cliente
+FULL_DEPLOY_PREFIXES = ("content-packs/", "customers/", "scripts/", ".github/")
  
 def mask(text: str, secrets: tuple) -> str:
     """Remove identificadores sensíveis de qualquer texto antes de imprimir."""
@@ -30,6 +32,23 @@ def to_iso(d) -> str:
         raise ValueError(f"duração inválida: {d}")
     n, u = m.groups()
     return f"P{n}D" if u == "d" else f"PT{n}{u.upper()}"
+ 
+ 
+def changed_files():
+    """Arquivos alterados no último commit. Retorna None se não for possível saber."""
+    r = subprocess.run(["git", "diff", "--name-only", "HEAD~1", "HEAD"],
+                       capture_output=True, text=True)
+    if r.returncode != 0:
+        return None
+    return {line.strip() for line in r.stdout.splitlines() if line.strip()}
+ 
+ 
+def needs_full_deploy(changed) -> bool:
+    if os.environ.get("FORCE_FULL_DEPLOY") == "1":
+        return True
+    if changed is None:
+        return True
+    return any(p.startswith(FULL_DEPLOY_PREFIXES) for p in changed)
  
  
 def find_rule_file(rule: str):
@@ -137,17 +156,29 @@ def main():
             sys.exit(f"ERRO: pack '{pack_name}' não existe")
         rules.update(json.loads(pack_path.read_text(encoding="utf-8"))["content"])
  
+    # o que mudou neste commit? (define se é deploy completo ou só das regras alteradas)
+    changed = changed_files()
+    full = needs_full_deploy(changed)
+    print(f"[{customer}] modo: {'DEPLOY COMPLETO' if full else 'APENAS ALTERADAS'}")
+ 
     # regras que já existem no workspace: {nome: id}
     existing = list_existing(sub, rg, ws)
     seen_names = set()
  
     failed = []
+    deployed = skipped = 0
     for rule in sorted(rules):
         f = find_rule_file(rule)
         if f is None:
             print(f"[{customer}] ERRO: yaml não encontrado para '{rule}'")
             failed.append(rule)
             continue
+ 
+        if not full and f.as_posix() not in changed:
+            print(f"[{customer}] SKIP   {f.name} (sem mudanças)")
+            skipped += 1
+            continue
+ 
         try:
             body = yaml_to_body(f)
         except Exception as e:
@@ -185,11 +216,13 @@ def main():
         action = "UPDATE" if key in existing else "CREATE"
         if r.returncode == 0:
             print(f"[{customer}] OK     {action} {f.name}")
+            deployed += 1
         else:
             err = mask((r.stderr or r.stdout or "").strip(), secrets)
             print(f"[{customer}] FALHOU {f.name}\n{err[:1500]}")
             failed.append(f.name)
  
+    print(f"[{customer}] resumo: {deployed} implantada(s), {skipped} ignorada(s), {len(failed)} com erro")
     if failed:
         sys.exit(f"[{customer}] {len(failed)} regra(s) com erro")
  

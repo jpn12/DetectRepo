@@ -36,6 +36,8 @@ jobs:
     environment: ${{ matrix.customer }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2
       - uses: azure/login@v2
         with:
           client-id: ${{ secrets.AZURE_CLIENT_ID }}
@@ -46,8 +48,10 @@ jobs:
           AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
           WORKSPACE: ${{ secrets.WORKSPACE }}
+          FORCE_FULL_DEPLOY: ${{ github.event_name != 'push' && '1' || '0' }}
         run: |
           echo "::add-mask::$AZURE_SUBSCRIPTION_ID"
           echo "::add-mask::$RESOURCE_GROUP"
           echo "::add-mask::$WORKSPACE"
+          pip install pyyaml
           python scripts/deploy.py ${{ matrix.customer }}
