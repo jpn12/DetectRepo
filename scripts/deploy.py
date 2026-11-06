@@ -119,7 +119,11 @@ def main():
         if r.returncode == 0:
             print(f"[{customer}] OK     {f.name}")
         else:
-            print(f"[{customer}] FALHOU {f.name}")
+            err = (r.stderr or r.stdout or "").strip()
+            # remove identificadores do texto antes de imprimir
+            for secret in (sub, rg, ws):
+                err = err.replace(secret, "***")
+            print(f"[{customer}] FALHOU {f.name}\n{err[:1500]}")
             failed.append(f.name)
 
     if failed:
