@@ -1,5 +1,5 @@
 id: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f 
-name: testingggggg
+name: testingggggg ###
 description: |
   Detecta usuário com muitas falhas de autenticação seguidas de um login bem-sucedido
   a partir do mesmo IP, indicando possível brute force/password spray bem-sucedido.
