@@ -2,7 +2,7 @@ name: testando NRT #
 description: |
   adasd
 severity: Low
-enabled: true
+enabled: false
 kind: NRT
 tactics:
   - PrivilegeEscalation
