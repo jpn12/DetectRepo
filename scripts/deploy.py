@@ -64,8 +64,29 @@ def yaml_to_body(path: Path) -> tuple[str, dict]:
             "eventGroupingSettings": {"aggregationKind": "SingleAlert"},
         },
     }
-    return str(r["id"]), body
+    return body
 
+def list_existing(sub, rg, ws) -> dict:
+    """Retorna {displayName em minúsculas: id da regra} do workspace."""
+    url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}"
+           f"/providers/Microsoft.OperationalInsights/workspaces/{ws}"
+           f"/providers/Microsoft.SecurityInsights/alertRules?api-version={API_VERSION}")
+    existing = {}
+    while url:
+        r = subprocess.run(["az", "rest", "--method", "get", "--url", url, "-o", "json"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            err = (r.stderr or "").replace(sub, "***").replace(rg, "***").replace(ws, "***")
+            sys.exit(f"ERRO ao listar regras existentes:\n{err[:800]}")
+        data = json.loads(r.stdout)
+        for item in data.get("value", []):
+            dn = item.get("properties", {}).get("displayName", "").strip().lower()
+            if dn:
+                if dn in existing:
+                    print(f"AVISO: há mais de uma regra com o nome '{dn}' no workspace")
+                existing[dn] = item["name"]
+        url = data.get("nextLink")
+    return existing
 
 def main():
     if len(sys.argv) < 2:
@@ -82,6 +103,33 @@ def main():
     sub = os.environ["AZURE_SUBSCRIPTION_ID"]
     rg = os.environ["RESOURCE_GROUP"]
     ws = os.environ["WORKSPACE"]
+
+    existing = list_existing(sub, rg, ws)
+    seen_names = set()
+
+    failed = []
+    for rule in sorted(rules):
+        f = find_rule_file(rule)
+        if f is None:
+            print(f"[{customer}] ERRO: yaml não encontrado para '{rule}'")
+            failed.append(rule)
+            continue
+        try:
+            body = yaml_to_body(f)
+        except Exception as e:
+            print(f"[{customer}] ERRO em {f.name}: {e}")
+            failed.append(f.name)
+            continue
+
+        key = body["properties"]["displayName"].strip().lower()
+        if key in seen_names:
+            print(f"[{customer}] ERRO: nome duplicado '{key}' ({f.name})")
+            failed.append(f.name)
+            continue
+        seen_names.add(key)
+
+        rule_id = existing.get(key) or str(uuid.uuid4())
+        # ... daqui para baixo, o PUT continua igual, usando rule_id na URL
 
     rules = set()
     for pack_name in cfg["platforms"]["sentinel"]["content-packs"]:
