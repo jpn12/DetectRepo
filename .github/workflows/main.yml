@@ -48,5 +48,5 @@ jobs:
         run: |
           echo "::add-mask::$RESOURCE_GROUP"
           echo "::add-mask::$WORKSPACE"
-          python scripts/build_arm.py
+          pip install pyyaml
           python scripts/deploy.py ${{ matrix.customer }}
