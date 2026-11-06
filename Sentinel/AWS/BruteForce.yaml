@@ -1,4 +1,4 @@
-id: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f 
+id: 6f1c2d3e-4a5b-4c6d-8e7f-9a0b1c2d3e4f ###
 name: Múltiplas falhas de login seguidas de sucesso
 description: |
   Detecta usuário com muitas falhas de autenticação seguidas de um login bem-sucedido

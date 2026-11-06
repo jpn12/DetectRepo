@@ -48,5 +48,4 @@ jobs:
         run: |
           echo "::add-mask::$RESOURCE_GROUP"
           echo "::add-mask::$WORKSPACE"
-          python scripts/build_arm.py
           python scripts/deploy.py ${{ matrix.customer }}
