@@ -8,7 +8,7 @@ from pathlib import Path
 
 import yaml  # pip install pyyaml
 
-API_VERSION = "2024-03-01"
+API_VERSION = "2025-07-01-preview"
 OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqual"}
 
 
