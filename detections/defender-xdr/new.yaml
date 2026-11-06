@@ -9,7 +9,7 @@ query: |
   | where FileName =~ "powershell.exe" and ProcessCommandLine has "-enc"
   | project Timestamp, DeviceId, DeviceName, ReportId, AccountName, AccountDomain, AccountSid, FileName, SHA1, SHA256
 alert:
-  title: PowerShell encodado iniciado por Office
+  title: PowerShell obscado
   description: Possivel execucao de codigo via phishing.
   severity: high          # informational, low, medium, high
   recommendedActions: Investigar o documento de origem e isolar o dispositivo.
