@@ -2,8 +2,6 @@
   "platform": "sentinel",
   "description": "Detecções de AWS.",
   "content": [
-    "detections/sentinel/aws/Suspicious EC2 RunInstances",
-    "detections/sentinel/aws/Network Firewall internal source alerts",
-    "detections/sentinel/aws/BruteForce.yaml"
+    "detections/Sentinel/AWS/BruteForce.yaml"
   ]
 }
