@@ -28,7 +28,7 @@ alert:
   tactics:
     - tactic: Execution
       techniques:
-        - technique: T1059.001
+        - technique: T1059
 # opcionais:
 # automatedActions:
 #   isolateDevices:
