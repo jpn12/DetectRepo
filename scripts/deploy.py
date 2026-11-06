@@ -32,7 +32,7 @@ failed = []
 for rule in sorted(rules):
     name = Path(rule).name
     # prefere o ARM gerado em build/; senão usa o JSON original da regra
-    template = Path("build") / f"{name}.json"
+    template = Path("detections") / f"{name}.json"
     if not template.exists():
         template = Path(rule + ".json")
     if not template.exists():
