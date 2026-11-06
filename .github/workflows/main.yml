@@ -43,10 +43,11 @@ jobs:
           subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
       - name: Build and deploy
         env:
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
           RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
           WORKSPACE: ${{ secrets.WORKSPACE }}
         run: |
+          echo "::add-mask::$AZURE_SUBSCRIPTION_ID"
           echo "::add-mask::$RESOURCE_GROUP"
           echo "::add-mask::$WORKSPACE"
-          pip install pyyaml
           python scripts/deploy.py ${{ matrix.customer }}
