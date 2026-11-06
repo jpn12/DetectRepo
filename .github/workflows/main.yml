@@ -1,1 +1,52 @@
+name: deploy
+on:
+  push:
+    branches: [main]
 
+permissions:
+  id-token: write
+  contents: read
+
+jobs:
+  list-customers:
+    runs-on: ubuntu-latest
+    outputs:
+      customers: ${{ steps.list.outputs.customers }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: list
+        run: |
+          python - <<'EOF' >> "$GITHUB_OUTPUT"
+          import json, glob
+          names = []
+          for f in glob.glob("customers/*.json"):
+              c = json.load(open(f, encoding="utf-8"))
+              if c.get("enabled"):
+                  names.append(c["customer"])
+          print("customers=" + json.dumps(names))
+          EOF
+
+  deploy:
+    needs: list-customers
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false          # falha em um cliente não derruba os outros
+      matrix:
+        customer: ${{ fromJson(needs.list-customers.outputs.customers) }}
+    environment: ${{ matrix.customer }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      - name: Build and deploy
+        env:
+          RESOURCE_GROUP: ${{ secrets.RESOURCE_GROUP }}
+          WORKSPACE: ${{ secrets.WORKSPACE }}
+        run: |
+          echo "::add-mask::$RESOURCE_GROUP"
+          echo "::add-mask::$WORKSPACE"
+          python scripts/build_arm.py
+          python scripts/deploy.py ${{ matrix.customer }}
