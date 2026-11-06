@@ -1,4 +1,4 @@
-name: Suspicious encoded PowerShell from Office #3333
+name: SSSSuspicious encoded PowerShell from Office #3333
 description: Office iniciando PowerShell com comando codificado.
 enabled: true
 schedule: 1h            # aceita 1h, 3h, 12h, 24h
