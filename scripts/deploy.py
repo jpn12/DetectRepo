@@ -3,6 +3,7 @@ import os
 import subprocess
 import sys
 import tempfile
+import uuid
 import re
 from pathlib import Path
 
