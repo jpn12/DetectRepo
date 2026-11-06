@@ -2,7 +2,7 @@ name: testingggggg ###
 description: |
   Detecta usuário com muitas falhas de autenticação seguidas de um login bem-sucedido
   a partir do mesmo IP, indicando possível brute force/password spray bem-sucedido.
-severity: High
+severity: Medium
 enabled: true
 queryFrequency: 2h
 queryPeriod: 3h
