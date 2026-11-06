@@ -13,7 +13,7 @@ alert:
   description: Possivel execucao de codigo via phishing.
   severity: high          # informational, low, medium, high
   recommendedActions: Investigar o documento de origem e isolar o dispositivo.
-  entityMappings:
+  impactedAssets:
     accounts:
       - nameColumn: AccountName
         ntDomainColumn: AccountDomain
