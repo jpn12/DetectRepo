@@ -10,7 +10,7 @@ from pathlib import Path
 import yaml
  
 GRAPH_RESOURCE = "https://graph.microsoft.com"
-BASE_URL = f"{GRAPH_RESOURCE}/beta/security/rules/detectionRules"
+BASE_URL = f"{GRAPH_RESOURCE}/security/rules/detectionRules"
 PLATFORM = "defender-xdr"
 RULES_DIR = Path("detections") / PLATFORM
  
