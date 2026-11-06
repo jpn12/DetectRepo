@@ -2,6 +2,6 @@
   "platform": "sentinel",
   "description": "Detecções de AWS.",
   "content": [
-    "Sentinel/AWS/BruteForce.yaml"
+    "detections/Sentinel/AWS/BruteForce.yaml"
   ]
 }
