@@ -1,0 +1,13 @@
+{
+  "customer": "teste",
+  "enabled": true,
+  "platforms": {
+    "sentinel": {
+      "content-packs": [
+        "sentinel-baseline",
+        "sentinel-aws",
+        "sentinel-crowdstrike"
+      ]
+    }
+  }
+}

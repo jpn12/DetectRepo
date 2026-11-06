@@ -1,0 +1,7 @@
+{
+  "platform": "sentinel",
+  "description": "Detecções que todos os ambientes recebem.",
+  "content": [
+    "detections/sentinel/azure/Rare subscription-level operations in Azure"
+  ]
+}
