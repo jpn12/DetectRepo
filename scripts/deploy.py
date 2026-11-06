@@ -12,10 +12,14 @@ import yaml  # pip install pyyaml
 API_VERSION = "2025-07-01-preview"
 
 OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqual"}
-REQUIRED_FIELDS = ["name", "description", "severity", "query", "queryFrequency", "queryPeriod"]
+SUPPORTED_KINDS = ("Scheduled", "NRT")
+ 
+REQUIRED_COMMON = ["name", "description", "severity", "query"]
+REQUIRED_SCHEDULED = ["queryFrequency", "queryPeriod"]  # NRT não usa agendamento
  
 # Mudanças nesses caminhos disparam deploy completo de todas as regras do cliente
 FULL_DEPLOY_PREFIXES = ("content-packs/", "customers/", "scripts/", ".github/")
+ 
  
 def mask(text: str, secrets: tuple) -> str:
     """Remove identificadores sensíveis de qualquer texto antes de imprimir."""
@@ -68,7 +72,12 @@ def find_rule_file(rule: str):
 def yaml_to_body(path: Path) -> dict:
     r = yaml.safe_load(path.read_text(encoding="utf-8"))
  
-    missing = [k for k in REQUIRED_FIELDS if not r.get(k)]
+    kind = str(r.get("kind", "Scheduled")).strip()
+    if kind not in SUPPORTED_KINDS:
+        raise ValueError(f"kind inválido: '{kind}' (use {' ou '.join(SUPPORTED_KINDS)})")
+ 
+    required = REQUIRED_COMMON + (REQUIRED_SCHEDULED if kind == "Scheduled" else [])
+    missing = [k for k in required if not r.get(k)]
     if missing:
         raise ValueError(f"campos obrigatórios ausentes: {', '.join(missing)}")
  
@@ -84,32 +93,35 @@ def yaml_to_body(path: Path) -> dict:
     techniques = sorted({t.split(".")[0] for t in all_techs})
     sub_techniques = [t for t in all_techs if "." in t]
  
-    return {
-        "kind": "Scheduled",
-        "properties": {
-            "displayName": str(r["name"]).strip(),
-            "description": str(r["description"]).strip(),
-            "severity": r["severity"],
-            "enabled": r.get("enabled", True),
-            "query": query,
+    props = {
+        "displayName": str(r["name"]).strip(),
+        "description": str(r["description"]).strip(),
+        "severity": r["severity"],
+        "enabled": r.get("enabled", True),
+        "query": query,
+        "suppressionDuration": "PT5H",
+        "suppressionEnabled": False,
+        "tactics": r.get("tactics", []),
+        "techniques": techniques,
+        "subTechniques": sub_techniques,
+        "entityMappings": r.get("entityMappings", []),
+        "incidentConfiguration": {"createIncident": True},
+        "eventGroupingSettings": {"aggregationKind": "SingleAlert"},
+    }
+ 
+    if kind == "Scheduled":
+        props.update({
             "queryFrequency": to_iso(r["queryFrequency"]),
             "queryPeriod": to_iso(r["queryPeriod"]),
             "triggerOperator": OPERATORS[r.get("triggerOperator", "gt")],
             "triggerThreshold": r.get("triggerThreshold", 0),
-            "suppressionDuration": "PT5H",
-            "suppressionEnabled": False,
-            "tactics": r.get("tactics", []),
-            "techniques": techniques,
-            "subTechniques": sub_techniques,
-            "entityMappings": r.get("entityMappings", []),
-            "incidentConfiguration": {"createIncident": True},
-            "eventGroupingSettings": {"aggregationKind": "SingleAlert"},
-        },
-    }
+        })
+ 
+    return {"kind": kind, "properties": props}
  
  
 def list_existing(sub: str, rg: str, ws: str) -> dict:
-    """Retorna {displayName em minúsculas: id da regra} do workspace."""
+    """Retorna {displayName em minúsculas: {"id": ..., "kind": ...}} do workspace."""
     url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}"
            f"/providers/Microsoft.OperationalInsights/workspaces/{ws}"
            f"/providers/Microsoft.SecurityInsights/alertRules?api-version={API_VERSION}")
@@ -126,7 +138,7 @@ def list_existing(sub: str, rg: str, ws: str) -> dict:
             if dn:
                 if dn in existing:
                     print(f"AVISO: há mais de uma regra com o nome '{dn}' no workspace")
-                existing[dn] = item["name"]
+                existing[dn] = {"id": item["name"], "kind": item.get("kind")}
         url = data.get("nextLink")
     return existing
  
@@ -161,7 +173,7 @@ def main():
     full = needs_full_deploy(changed)
     print(f"[{customer}] modo: {'DEPLOY COMPLETO' if full else 'APENAS ALTERADAS'}")
  
-    # regras que já existem no workspace: {nome: id}
+    # regras que já existem no workspace: {nome: {id, kind}}
     existing = list_existing(sub, rg, ws)
     seen_names = set()
  
@@ -187,14 +199,24 @@ def main():
             continue
  
         key = body["properties"]["displayName"].strip().lower()
+        kind = body["kind"]
+ 
         if key in seen_names:
             print(f"[{customer}] ERRO: nome duplicado '{key}' ({f.name})")
             failed.append(f.name)
             continue
         seen_names.add(key)
  
+        # o tipo de uma regra existente não pode ser trocado (Scheduled <-> NRT)
+        current = existing.get(key)
+        if current and current["kind"] and current["kind"] != kind:
+            print(f"[{customer}] ERRO: '{f.name}' é {kind}, mas no workspace a regra "
+                  f"existente é {current['kind']}. Apague a antiga e rode de novo.")
+            failed.append(f.name)
+            continue
+ 
         # reaproveita o id da regra existente (mesmo nome); senão cria um novo
-        rule_id = existing.get(key) or str(uuid.uuid4())
+        rule_id = current["id"] if current else str(uuid.uuid4())
  
         url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}"
                f"/providers/Microsoft.OperationalInsights/workspaces/{ws}"
@@ -213,13 +235,13 @@ def main():
         finally:
             os.unlink(tmp_path)
  
-        action = "UPDATE" if key in existing else "CREATE"
+        action = "UPDATE" if current else "CREATE"
         if r.returncode == 0:
-            print(f"[{customer}] OK     {action} {f.name}")
+            print(f"[{customer}] OK     {action} [{kind}] {f.name}")
             deployed += 1
         else:
             err = mask((r.stderr or r.stdout or "").strip(), secrets)
-            print(f"[{customer}] FALHOU {f.name}\n{err[:1500]}")
+            print(f"[{customer}] FALHOU [{kind}] {f.name}\n{err[:1500]}")
             failed.append(f.name)
  
     print(f"[{customer}] resumo: {deployed} implantada(s), {skipped} ignorada(s), {len(failed)} com erro")
