@@ -5,7 +5,7 @@ description: |
 severity: High
 enabled: true
 queryFrequency: 1h
-queryPeriod: 3h
+queryPeriod: 1h
 triggerOperator: gt
 triggerThreshold: 0
 tactics:
