@@ -39,6 +39,9 @@ def yaml_to_body(path: Path) -> tuple[str, dict]:
     query = r["query"].strip()
     if len(query) > 10000:
         raise ValueError(f"query com {len(query)} caracteres (limite ~10000)")
+    all_techs = [str(t).strip() for t in r.get("relevantTechniques", [])]
+    techniques = sorted({t.split(".")[0] for t in all_techs})   # T1110.003 -> T1110
+    sub_techniques = [t for t in all_techs if "." in t]  
     body = {
         "kind": "Scheduled",
         "properties": {
@@ -54,7 +57,8 @@ def yaml_to_body(path: Path) -> tuple[str, dict]:
             "suppressionDuration": "PT5H",
             "suppressionEnabled": False,
             "tactics": r.get("tactics", []),
-            "techniques": r.get("relevantTechniques", []),
+            "techniques": techniques,
+            "subTechniques": sub_techniques,
             "entityMappings": r.get("entityMappings", []),
             "incidentConfiguration": {"createIncident": True},
             "eventGroupingSettings": {"aggregationKind": "SingleAlert"},
