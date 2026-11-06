@@ -25,4 +25,8 @@ incidentConfiguration:
     groupByAlertDetails: []
     groupByCustomDetails: []
 
-entityMappings: []
+entityMappings:
+  - entityType: Host
+    fieldMappings:
+      - identifier: HostName
+        columnName: Computer
