@@ -5,8 +5,7 @@
     "sentinel": {
       "content-packs": [
         "sentinel-baseline",
-        "sentinel-aws",
-        "sentinel-crowdstrike"
+        "sentinel-aws"
       ]
     }
   }
