@@ -2,6 +2,7 @@
   "platform": "defender-xdr",
   "description": "Detecções de endpoint no Defender XDR.",
   "content": [
-    "detections/defender-xdr/suspicious.yaml"
+    "detections/defender-xdr/suspicious.yaml",
+    "detections/defender-xdr/new.yaml"
   ]
 }
