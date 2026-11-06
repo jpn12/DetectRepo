@@ -4,7 +4,6 @@
   "platforms": {
     "sentinel": {
       "content-packs": [
-        "sentinel-baseline",
         "sentinel-aws"
       ]
     }
