@@ -1,0 +1,28 @@
+name: testando NRT
+description: |
+  adasd
+severity: Low
+enabled: true
+kind: NRT
+tactics:
+  - PrivilegeEscalation
+relevantTechniques: []
+query: |
+  SecurityEvent
+  | take 1
+suppressionDuration: PT5H
+suppressionEnabled: false
+eventGroupingSettings:
+  aggregationKind: AlertPerResult
+incidentConfiguration:
+  createIncident: true
+  groupingConfiguration:
+    enabled: false
+    reopenClosedIncident: false
+    lookbackDuration: PT5H
+    matchingMethod: AllEntities
+    groupByEntities: []
+    groupByAlertDetails: []
+    groupByCustomDetails: []
+
+entityMappings: []
