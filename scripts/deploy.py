@@ -18,7 +18,7 @@ REQUIRED_COMMON = ["name", "description", "severity", "query"]
 REQUIRED_SCHEDULED = ["queryFrequency", "queryPeriod"]  # NRT não usa agendamento
  
 # Mudanças nesses caminhos disparam deploy completo de todas as regras do cliente
-FULL_DEPLOY_PREFIXES = ("customers/", "scripts/", ".github/")
+FULL_DEPLOY_PREFIXES = ("content-packs/", "customers/", "scripts/", ".github/")
  
  
 def mask(text: str, secrets: tuple) -> str:
