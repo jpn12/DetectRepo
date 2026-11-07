@@ -185,11 +185,6 @@ def main():
             failed.append(rule)
             continue
  
-        if not full and f.as_posix() not in changed:
-            print(f"[{customer}] SKIP   {f.name} (sem mudanças)")
-            skipped += 1
-            continue
- 
         try:
             body = yaml_to_body(f)
         except Exception as e:
