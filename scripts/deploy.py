@@ -47,12 +47,12 @@ def changed_files():
     return {line.strip() for line in r.stdout.splitlines() if line.strip()}
  
  
-def needs_full_deploy(changed) -> bool:
-    if os.environ.get("FORCE_FULL_DEPLOY") == "1":
-        return True
-    if changed is None:
-        return True
-    return any(p.startswith(FULL_DEPLOY_PREFIXES) for p in changed)
+##def needs_full_deploy(changed) -> bool:
+##    if os.environ.get("FORCE_FULL_DEPLOY") == "1":
+##        return True
+##    if changed is None:
+##        return True
+##    return any(p.startswith(FULL_DEPLOY_PREFIXES) for p in changed)
  
  
 def find_rule_file(rule: str):
@@ -170,8 +170,7 @@ def main():
  
     # o que mudou neste commit? (define se é deploy completo ou só das regras alteradas)
     changed = changed_files()
-    full = needs_full_deploy(changed)
-    print(f"[{customer}] modo: {'DEPLOY COMPLETO' if full else 'APENAS ALTERADAS'}")
+    print(f"[{customer}] modo: {'APENAS ALTERADAS'}")
  
     # regras que já existem no workspace: {nome: {id, kind}}
     existing = list_existing(sub, rg, ws)
