@@ -4,8 +4,7 @@
   "platforms": {
     "sentinel": {
       "content-packs": [
-        "sentinel-aws",
-        "sentinel-baseline"
+        "sentinel-aws"
       ]
     },
     "defender-xdr": { 
