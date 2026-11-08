@@ -4,6 +4,6 @@
   "content": [
     "detections/defender-xdr/suspicious.yaml",
     "detections/defender-xdr/new.yaml",
-    "detections/defender-xdr/test2121.yaml"
+    "detections/defender-xdr/tes2121.yaml"
   ]
 }
