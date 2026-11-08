@@ -55,10 +55,3 @@ jobs:
           echo "::add-mask::$WORKSPACE"
           pip install pyyaml
           python scripts/deploy.py ${{ matrix.customer }}
-      - name: Deploy XDR
-        env:
-          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
-          FORCE_FULL_DEPLOY: ${{ github.event_name != 'push' && '1' || '0' }}
-        run: |
-          echo "::add-mask::$AZURE_TENANT_ID"
-          python scripts/deploy_xdr.py ${{ matrix.customer }}
