@@ -2,8 +2,8 @@ name: Múltiplas falhas de login seguidas de sucesso
 description: |
   Detecta usuário com muitas falhas de autenticação seguidas de um login bem-sucedido
   a partir do mesmo IP, indicando possível brute force/password spray bem-sucedido.
-severity: High
-enabled: true
+severity: Medium
+enabled: false
 queryFrequency: 1h
 queryPeriod: 1h
 triggerOperator: gt
