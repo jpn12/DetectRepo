@@ -1,0 +1,38 @@
+name: webdav
+description: Office iniciando PowerShell com comando codificado.
+enabled: true
+schedule: 1h            # aceita 1h, 3h, 12h, 24h
+query: |
+  DeviceProcessEvents
+  | where Timestamp > ago(1h)
+  | where InitiatingProcessFileName in~ ("winword.exe", "excel.exe", "outlook.exe")
+  | where FileName =~ "powershell.exe" and ProcessCommandLine has "-enc"
+  | project Timestamp, DeviceId, DeviceName, ReportId, AccountName, AccountDomain, AccountSid, FileName, SHA1, SHA256
+alert:
+  title: webdav
+  description: Possivel execucao de codigo via phishing.
+  severity: high          # informational, low, medium, high
+  recommendedActions: Investigar o documento de origem e isolar o dispositivo.
+  entityMappings:
+    accounts:
+      - nameColumn: AccountName
+        ntDomainColumn: AccountDomain
+        sidColumn: AccountSid
+    hosts:
+      - deviceIdColumn: DeviceId
+        nameColumn: DeviceName
+    files:
+      - nameColumn: FileName
+        sha1Column: SHA1
+        sha256Column: SHA256
+  tactics:
+    - tactic: Execution
+      techniques:
+        - technique: T1059
+# opcionais:
+# automatedActions:
+#   isolateDevices:
+#     - deviceIdColumn: DeviceId
+#       isolationType: full
+# incidentConfiguration:
+#   isExcludedFromIncidentCorrelation: false
