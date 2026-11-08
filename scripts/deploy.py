@@ -9,10 +9,6 @@ from pathlib import Path
 
 import yaml  # PyYAML (já vem instalado no runner do GitHub)
 
-# =====================================================================================
-# Configuração
-# =====================================================================================
-
 # Mudanças nesses caminhos fazem o script AVALIAR todas as regras do cliente
 # (cada uma só é reenviada se estiver ausente ou diferente no ambiente).
 FULL_DEPLOY_PREFIXES = ("content-packs/", "customers/", "scripts/", ".github/")
