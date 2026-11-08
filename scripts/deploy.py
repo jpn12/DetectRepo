@@ -21,7 +21,7 @@ DETECTIONS_DIR = Path("detections")
 XDR_DIR = DETECTIONS_DIR / "defender-xdr"
 
 # --- Sentinel ---
-SENTINEL_API_VERSION = "2024-03-01"  # subTechniques exige versão mais nova que 2023-02-01
+SENTINEL_API_VERSION = "2025-07-01-preview"  # subTechniques exige versão mais nova que 2023-02-01
 OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqual"}
 SENTINEL_KINDS = ("Scheduled", "NRT")
 SENTINEL_REQUIRED = ["name", "description", "severity", "query"]
