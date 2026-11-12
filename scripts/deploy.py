@@ -24,7 +24,7 @@ XDR_DIR = DETECTIONS_DIR / "defender-xdr"
 PLATFORM_NAMES = ("sentinel", "defender-xdr")
 
 # --- Sentinel ---
-SENTINEL_API_VERSION = "2025-07-01-preview"  # subTechniques exige versão mais nova que 2023-02-01
+SENTINEL_API_VERSION = "2024-03-01"  # subTechniques exige versão mais nova que 2023-02-01
 OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqual"}
 SENTINEL_KINDS = ("Scheduled", "NRT")
 SENTINEL_REQUIRED = ["name", "description", "severity", "query"]
@@ -288,7 +288,8 @@ def render_query(r: dict, exceptions, today: date = None, allow_watchlist: bool 
         return query, 0, 0
     today = today or datetime.now(timezone.utc).date()
     if not EXC_MARKER.search(query):
-        raise ValueError("a regra não tem o marcador '// DAC:exceptions' e não aceita exceções")
+        raise ValueError("há exceções para esta regra, mas ela não tem o marcador '// DAC:exceptions' "
+                         "na query (nem 'exception_fields'), então não aceita exceções")
     allowed = {str(f) for f in (r.get("exception_fields") or [])}
     if not allowed:
         raise ValueError("a regra não declara 'exception_fields'")
@@ -500,6 +501,15 @@ def sentinel_list_existing(sub: str, rg: str, ws: str) -> dict:
     return existing
 
 
+def peek_rule_name(path: Path) -> str:
+    """Nome da regra em minúsculas, sem validar o resto (usado para casar exceções)."""
+    try:
+        r = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        return str(r.get("name", "")).strip().lower()
+    except Exception:
+        return ""
+
+
 def referenced_watchlists(query: str) -> set:
     """Aliases citados em _GetWatchlist('...') na query já renderizada."""
     return set(WATCHLIST_REF_RE.findall(query))
@@ -558,6 +568,10 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
             print(f"{tag} SKIP     {f.name} (arquivo não alterado)")
             skipped += 1
             continue
+
+        peeked = peek_rule_name(f)
+        if peeked in exc_map:
+            used_exc.add(peeked)
 
         try:
             body, meta = sentinel_body(f, exc_map)
@@ -792,6 +806,10 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
             print(f"{tag} SKIP     {f.name} (arquivo não alterado)")
             skipped += 1
             continue
+
+        peeked = peek_rule_name(f)
+        if peeked in exc_map:
+            used_exc.add(peeked)
 
         try:
             r, meta = xdr_load_rule(f, exc_map)
