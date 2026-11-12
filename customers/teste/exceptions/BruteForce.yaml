@@ -5,5 +5,4 @@ exceptions:
     ticket: INC-1234
     expires: 2027-03-01
     when:
-      UserPrincipalName: { equals: "usuario1" }
-      UserAgent:       { contains: "Google" }
+      SourceIpAddress: { in_watchlist: MeuIP }
