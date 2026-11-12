@@ -23,6 +23,7 @@ query: |
   SigninLogs
   | where TimeGenerated > ago(1h)
   | where ResultType == "0"
+  // DAC:exceptions
   | join kind=inner failures on UserPrincipalName, IPAddress
   | where TimeGenerated > LastFail
   | project TimeGenerated, UserPrincipalName, IPAddress, FailCount, AppDisplayName
