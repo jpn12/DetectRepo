@@ -1,4 +1,4 @@
-rule: Múltiplas falhas de login seguidas de sucesso   # igual ao "name" da regra
+rule: BruteForce.yaml   # igual ao "name" da regra
 # platform: defender-xdr                    # só se a regra for do XDR (padrão: sentinel)
 exceptions:
   - reason: Automação do time de infra

@@ -1,5 +1,5 @@
 name: Múltiplas falhas de login seguidas de sucesso
-exception_fields: [UserIdentityArn, UserAgent]
+exception_fields: [UserIdentityArn, UserAgent, SourceIpAddress]
 description: |
   Detecta usuário com muitas falhas de autenticação seguidas de um login bem-sucedido
   a partir do mesmo IP, indicando possível brute force/password spray bem-sucedido.
