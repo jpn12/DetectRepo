@@ -1,3 +1,4 @@
+import ipaddress
 import json
 import os
 import re
@@ -5,9 +6,14 @@ import subprocess
 import sys
 import tempfile
 import uuid
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import yaml  # PyYAML (já vem instalado no runner do GitHub)
+
+# =====================================================================================
+# Configuração
+# =====================================================================================
 
 # Mudanças nesses caminhos fazem o script AVALIAR todas as regras do cliente
 # (cada uma só é reenviada se estiver ausente ou diferente no ambiente).
@@ -15,6 +21,7 @@ FULL_DEPLOY_PREFIXES = ("content-packs/", "customers/", "scripts/", ".github/")
 
 DETECTIONS_DIR = Path("detections")
 XDR_DIR = DETECTIONS_DIR / "defender-xdr"
+PLATFORM_NAMES = ("sentinel", "defender-xdr")
 
 # --- Sentinel ---
 SENTINEL_API_VERSION = "2025-07-01-preview"  # subTechniques exige versão mais nova que 2023-02-01
@@ -22,6 +29,7 @@ OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqu
 SENTINEL_KINDS = ("Scheduled", "NRT")
 SENTINEL_REQUIRED = ["name", "description", "severity", "query"]
 SENTINEL_REQUIRED_SCHEDULED = ["queryFrequency", "queryPeriod"]  # NRT não usa agendamento
+SENTINEL_MAX_QUERY = 10000
 
 # --- Defender XDR (Microsoft Graph, beta) ---
 GRAPH_RESOURCE = "https://graph.microsoft.com"
@@ -34,6 +42,16 @@ XDR_SCHEDULES = {"1h": "PT1H", "3h": "PT3H", "12h": "PT12H", "24h": "PT24H"}
 XDR_NAMESPACE = uuid.UUID("6f1c2f0e-5b7a-4c3d-9a2e-1d4b8c7e9a10")
 
 MITRE_ID = re.compile(r"T\d{4}(\.\d{3})?")
+
+# --- Exceções por cliente ---
+EXC_MARKER = re.compile(r"^[ \t]*//[ \t]*DAC:exceptions[ \t]*$", re.MULTILINE)
+EXC_OPERATORS = ("equals", "contains", "startswith", "in", "in_range", "in_watchlist")
+FIELD_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+MAX_LIST_VALUES = 500
+WATCHLIST_ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
+WATCHLIST_REF_RE = re.compile(r"_GetWatchlist\(\s*['\"]([^'\"]+)['\"]\s*\)")
+MAX_EXPIRY_DAYS = 365   # acima disso o validate.py apenas avisa
 
 # --- Comparação ---
 DURATION_KEYS = {"queryFrequency", "queryPeriod", "suppressionDuration",
@@ -121,6 +139,208 @@ def load_pack_rules(platform_cfg) -> set:
 
 
 # =====================================================================================
+# Exceções por cliente: YAML declarativo -> KQL
+#
+# Regras de segurança: operadores de uma lista fixa, nomes de campo validados contra
+# "exception_fields" da regra, valores sempre escapados e NUNCA impressos em log.
+# =====================================================================================
+
+def parse_expires(value) -> date:
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    if isinstance(value, str):
+        try:
+            return date.fromisoformat(value.strip())
+        except ValueError:
+            pass
+    raise ValueError("'expires' deve ser uma data no formato AAAA-MM-DD")
+
+
+def kql_str(v) -> str:
+    """Literal de texto KQL com escape. Rejeita tipos que o YAML converte sem avisar."""
+    if not isinstance(v, str):
+        raise ValueError("valor deve ser texto (coloque entre aspas no YAML)")
+    if v == "":
+        raise ValueError("valor vazio")
+    if CONTROL_RE.search(v):
+        raise ValueError("valor contém caracteres de controle")
+    return '"' + v.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def parse_ip_range(raw, allow_broad: bool):
+    """Aceita IP solto ou CIDR (IPv4/IPv6). Nunca inclui o valor na mensagem de erro."""
+    if not isinstance(raw, str):
+        raise ValueError("deve ser texto")
+    s = raw.strip()
+    try:
+        if "/" in s:
+            net = ipaddress.ip_network(s, strict=True)
+        else:
+            ip = ipaddress.ip_address(s)
+            net = ipaddress.ip_network(f"{ip}/{ip.max_prefixlen}")
+    except ValueError:
+        raise ValueError("IP/CIDR inválido (CIDR com bits de host também é recusado)")
+    if net.prefixlen == 0:
+        raise ValueError("faixa 0.0.0.0/0 (ou ::/0) não é permitida")
+    min_prefix = 16 if net.version == 4 else 32
+    if net.prefixlen < min_prefix and not allow_broad:
+        raise ValueError(f"faixa muito ampla (menor que /{min_prefix}); "
+                         f"use allow_broad: true se for intencional")
+    return net
+
+
+def compile_condition(field: str, spec, allow_broad: bool, allow_watchlist: bool = True) -> str:
+    # atalhos: valor simples = equals; lista = in
+    if not isinstance(spec, dict):
+        spec = {"in": spec} if isinstance(spec, list) else {"equals": spec}
+    if len(spec) != 1:
+        raise ValueError(f"campo '{field}': use exatamente um operador")
+    (op, val), = spec.items()
+    if op not in EXC_OPERATORS:
+        raise ValueError(f"campo '{field}': operador inválido '{op}' "
+                         f"(use {', '.join(EXC_OPERATORS)})")
+
+    if op == "in_watchlist":
+        if not allow_watchlist:
+            raise ValueError(f"campo '{field}': 'in_watchlist' só é suportado no Sentinel")
+        alias, column = val, "SearchKey"
+        if isinstance(val, dict):
+            if set(val) - {"alias", "column"}:
+                raise ValueError(f"campo '{field}': in_watchlist aceita apenas 'alias' e 'column'")
+            alias, column = val.get("alias"), val.get("column", "SearchKey")
+        if not isinstance(alias, str) or not WATCHLIST_ALIAS_RE.fullmatch(alias):
+            raise ValueError(f"campo '{field}': alias de watchlist inválido "
+                             f"(use letras, números, '-' e '_', até 64 caracteres)")
+        if not isinstance(column, str) or not FIELD_RE.fullmatch(column):
+            raise ValueError(f"campo '{field}': nome de coluna da watchlist inválido")
+        return f"coalesce({field} in ((_GetWatchlist('{alias}') | project {column})), false)"
+
+    if op in ("equals", "contains", "startswith"):
+        kop = {"equals": "=~", "contains": "contains", "startswith": "startswith"}[op]
+        try:
+            lit = kql_str(val)
+        except ValueError as e:
+            raise ValueError(f"campo '{field}': {e}")
+        return f"coalesce({field} {kop} {lit}, false)"
+
+    if not isinstance(val, list) or not val:
+        raise ValueError(f"campo '{field}': '{op}' exige uma lista não vazia")
+    if len(val) > MAX_LIST_VALUES:
+        raise ValueError(f"campo '{field}': lista com mais de {MAX_LIST_VALUES} itens "
+                         f"(para listas grandes use watchlist)")
+
+    if op == "in":
+        try:
+            items = ", ".join(kql_str(x) for x in val)
+        except ValueError as e:
+            raise ValueError(f"campo '{field}': {e}")
+        return f"coalesce({field} in~ ({items}), false)"
+
+    # in_range: IPs soltos e CIDRs
+    v4, v6 = [], []
+    for i, raw in enumerate(val, 1):
+        try:
+            net = parse_ip_range(raw, allow_broad)
+        except ValueError as e:
+            raise ValueError(f"campo '{field}': in_range item {i}: {e}")
+        (v4 if net.version == 4 else v6).append(str(net))
+    parts = []
+    if v4:
+        parts.append(f"ipv4_is_in_any_range({field}, dynamic([{', '.join(json.dumps(x) for x in v4)}]))")
+    if v6:
+        parts.append(f"ipv6_is_in_any_range({field}, dynamic([{', '.join(json.dumps(x) for x in v6)}]))")
+    # coalesce: valor que não é IP (ex.: nome de serviço da AWS) vira "não casa", em vez de
+    # null, que faria o 'where not(...)' descartar o evento em silêncio
+    return f"coalesce({' or '.join(parts)}, false)"
+
+
+def compile_exception(exc, allowed_fields: set, today: date, allow_watchlist: bool = True):
+    """Retorna a expressão KQL da exceção, ou None se estiver vencida."""
+    if not isinstance(exc, dict):
+        raise ValueError("cada exceção deve ser um mapa")
+    for k in ("reason", "ticket", "expires", "when"):
+        if not exc.get(k):
+            raise ValueError(f"campo obrigatório ausente: '{k}'")
+    expires = parse_expires(exc["expires"])
+    if expires < today:
+        return None
+    when = exc["when"]
+    if not isinstance(when, dict):
+        raise ValueError("'when' deve ser um mapa campo -> condição")
+    allow_broad = bool(exc.get("allow_broad", False))
+    conds = []
+    for field, spec in when.items():
+        field = str(field)
+        if not FIELD_RE.fullmatch(field):
+            raise ValueError(f"nome de campo inválido: '{field}'")
+        if field not in allowed_fields:
+            raise ValueError(f"campo '{field}' não é permitido nesta regra (exception_fields)")
+        conds.append(compile_condition(field, spec, allow_broad, allow_watchlist))
+    return " and ".join(conds)
+
+
+def render_query(r: dict, exceptions, today: date = None, allow_watchlist: bool = True):
+    """Injeta as exceções do cliente na query. Retorna (query, ativas, vencidas)."""
+    query = str(r["query"]).strip()
+    if not exceptions:
+        return query, 0, 0
+    today = today or datetime.now(timezone.utc).date()
+    if not EXC_MARKER.search(query):
+        raise ValueError("a regra não tem o marcador '// DAC:exceptions' e não aceita exceções")
+    allowed = {str(f) for f in (r.get("exception_fields") or [])}
+    if not allowed:
+        raise ValueError("a regra não declara 'exception_fields'")
+
+    exprs, expired = [], 0
+    for i, exc in enumerate(exceptions, 1):
+        try:
+            expr = compile_exception(exc, allowed, today, allow_watchlist)
+        except ValueError as e:
+            raise ValueError(f"exceção #{i}: {e}")
+        if expr is None:
+            expired += 1
+        else:
+            exprs.append(expr)
+    if not exprs:
+        return query, 0, expired
+
+    block = "| where not(\n" + "\n    or\n".join(f"    ({e})" for e in exprs) + "\n  )"
+    return EXC_MARKER.sub(lambda m: block, query, count=1), len(exprs), expired
+
+
+def load_customer_exceptions(customer: str, platform: str) -> dict:
+    """Lê customers/<cliente>/exceptions/*.yaml -> {nome da regra em minúsculas: [exceções]}."""
+    out = {}
+    d = Path("customers") / customer / "exceptions"
+    if not d.is_dir():
+        return out
+    for f in sorted(d.rglob("*")):
+        if f.suffix.lower() not in (".yaml", ".yml"):
+            continue
+        try:
+            data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:   # a mensagem do PyYAML pode conter trechos do arquivo
+            raise DeployError(f"YAML inválido em {f.as_posix()}")
+        if not isinstance(data, dict):
+            raise DeployError(f"{f.as_posix()}: formato inválido")
+        plat = str(data.get("platform", "sentinel"))
+        if plat not in PLATFORM_NAMES:
+            raise DeployError(f"{f.as_posix()}: platform inválida (use {', '.join(PLATFORM_NAMES)})")
+        if plat != platform:
+            continue
+        rule = str(data.get("rule", "")).strip()
+        if not rule:
+            raise DeployError(f"{f.as_posix()}: falta o campo 'rule'")
+        excs = data.get("exceptions")
+        if not isinstance(excs, list) or not excs:
+            raise DeployError(f"{f.as_posix()}: 'exceptions' deve ser uma lista não vazia")
+        out.setdefault(rule.lower(), []).extend(excs)
+    return out
+
+
+# =====================================================================================
 # Comparação: o que vamos enviar x o que já existe no ambiente
 # =====================================================================================
 
@@ -196,7 +416,8 @@ def differing_keys(sent: dict, actual: dict) -> list:
 # Microsoft Sentinel
 # =====================================================================================
 
-def sentinel_body(path: Path) -> dict:
+def sentinel_body(path: Path, exceptions: dict = None):
+    """Monta o corpo da regra. Retorna (body, meta). 'exceptions' = {nome minúsculo: [...]}"""
     r = yaml.safe_load(path.read_text(encoding="utf-8"))
 
     kind = str(r.get("kind", "Scheduled")).strip()
@@ -208,9 +429,11 @@ def sentinel_body(path: Path) -> dict:
     if missing:
         raise ValueError(f"campos obrigatórios ausentes: {', '.join(missing)}")
 
-    query = str(r["query"]).strip()
-    if len(query) > 10000:
-        raise ValueError(f"query com {len(query)} caracteres (limite ~10000)")
+    name_key = str(r["name"]).strip().lower()
+    query, active, expired = render_query(r, (exceptions or {}).get(name_key))
+    if len(query) > SENTINEL_MAX_QUERY:
+        raise ValueError(f"query com {len(query)} caracteres (limite ~{SENTINEL_MAX_QUERY})"
+                         f"{' após aplicar exceções' if active else ''}")
 
     # técnicas pai (T####) e sub-técnicas (T####.###) vão em campos separados
     all_techs = [str(t).strip() for t in r.get("relevantTechniques", []) or []]
@@ -248,7 +471,7 @@ def sentinel_body(path: Path) -> dict:
             "triggerThreshold": r.get("triggerThreshold", 0),
         })
 
-    return {"kind": kind, "properties": props}
+    return {"kind": kind, "properties": props}, {"active": active, "expired": expired}
 
 
 def sentinel_list_existing(sub: str, rg: str, ws: str) -> dict:
@@ -277,6 +500,35 @@ def sentinel_list_existing(sub: str, rg: str, ws: str) -> dict:
     return existing
 
 
+def referenced_watchlists(query: str) -> set:
+    """Aliases citados em _GetWatchlist('...') na query já renderizada."""
+    return set(WATCHLIST_REF_RE.findall(query))
+
+
+def sentinel_list_watchlists(sub: str, rg: str, ws: str):
+    """Aliases (minúsculos) das watchlists do workspace, ou None se não foi possível listar."""
+    url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}"
+           f"/providers/Microsoft.OperationalInsights/workspaces/{ws}"
+           f"/providers/Microsoft.SecurityInsights/watchlists"
+           f"?api-version={SENTINEL_API_VERSION}")
+    aliases = set()
+    while url:
+        r = subprocess.run(["az", "rest", "--method", "get", "--url", url, "-o", "json"],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            return None
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            return None
+        for item in data.get("value", []):
+            alias = (item.get("properties") or {}).get("watchlistAlias") or item.get("name")
+            if alias:
+                aliases.add(str(alias).lower())
+        url = data.get("nextLink")
+    return aliases
+
+
 def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
     """Retorna o número de regras com erro."""
     try:
@@ -289,8 +541,10 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
     tag = f"[{customer}][sentinel]"
 
     rules = load_pack_rules(cfg)
+    exc_map = load_customer_exceptions(customer, "sentinel")
     existing = sentinel_list_existing(sub, rg, ws)
-    seen_names, failed = set(), []
+    wl_cache = {}   # watchlists do workspace, carregadas só se alguma regra precisar
+    seen_names, used_exc, failed = set(), set(), []
     deployed = uptodate = skipped = 0
 
     for rule in sorted(rules):
@@ -306,7 +560,7 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
             continue
 
         try:
-            body = sentinel_body(f)
+            body, meta = sentinel_body(f, exc_map)
         except Exception as e:
             print(f"{tag} ERRO em {f.name}: {e}")
             failed.append(f.name)
@@ -314,6 +568,28 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
 
         key = body["properties"]["displayName"].strip().lower()
         kind = body["kind"]
+        if key in exc_map:
+            used_exc.add(key)
+
+        # regra que cita watchlist: a lista precisa existir no workspace deste cliente
+        needed = referenced_watchlists(body["properties"]["query"])
+        if needed:
+            if "set" not in wl_cache:
+                wl_cache["set"] = sentinel_list_watchlists(sub, rg, ws)
+                if wl_cache["set"] is None:
+                    print(f"{tag} AVISO: não foi possível listar as watchlists do workspace; "
+                          f"a existência delas não será verificada")
+            have = wl_cache["set"]
+            if have is not None:
+                missing_wl = sorted(a for a in needed if a.lower() not in have)
+                if missing_wl:
+                    print(f"{tag} ERRO em {f.name}: watchlist(s) inexistente(s) no workspace: "
+                          f"{', '.join(missing_wl)}")
+                    failed.append(f.name)
+                    continue
+        if meta["expired"]:
+            print(f"{tag} AVISO    {f.name}: {meta['expired']} exceção(ões) vencida(s) ignorada(s)")
+        extra = f" [exceções: {meta['active']}]" if meta["active"] else ""
 
         if key in seen_names:
             print(f"{tag} ERRO: nome duplicado '{key}' ({f.name})")
@@ -335,7 +611,7 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
         if current:
             diff = differing_keys(body["properties"], current["properties"])
             if not diff and not scope.forced:
-                print(f"{tag} UPTODATE {f.name} (já implantada, sem alterações)")
+                print(f"{tag} UPTODATE {f.name} (já implantada, sem alterações){extra}")
                 uptodate += 1
                 continue
 
@@ -360,12 +636,17 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
         action = "UPDATE" if current else "CREATE"
         detail = f" (campos: {', '.join(diff)})" if diff else ""
         if r.returncode == 0:
-            print(f"{tag} OK       {action} [{kind}] {f.name}{detail}")
+            print(f"{tag} OK       {action} [{kind}] {f.name}{detail}{extra}")
             deployed += 1
         else:
             err = mask((r.stderr or r.stdout or "").strip(), secrets)
             print(f"{tag} FALHOU   {action} [{kind}] {f.name}\n{err[:1500]}")
             failed.append(f.name)
+
+    if scope.full:
+        for name in sorted(set(exc_map) - used_exc):
+            print(f"{tag} AVISO: há exceções para a regra '{name}', mas ela não está "
+                  f"nos packs deste cliente (nome errado?)")
 
     print(f"{tag} resumo: {deployed} implantada(s), {uptodate} já atualizada(s), "
           f"{skipped} ignorada(s), {len(failed)} com erro")
@@ -410,7 +691,8 @@ def normalize_tactics(tactics):
     return result
 
 
-def xdr_load_rule(path: Path) -> dict:
+def xdr_load_rule(path: Path, exceptions: dict = None):
+    """Lê e valida o YAML. Retorna (regra, meta); a query já vem com as exceções aplicadas."""
     r = yaml.safe_load(path.read_text(encoding="utf-8"))
     missing = [k for k in XDR_REQUIRED if not r.get(k)]
     if missing:
@@ -425,7 +707,12 @@ def xdr_load_rule(path: Path) -> dict:
         raise ValueError(f"schedule inválido: {r['schedule']} (use {', '.join(XDR_SCHEDULES)})")
     if alert.get("tactics"):
         alert["tactics"] = normalize_tactics(alert["tactics"])
-    return r
+
+    name_key = str(r["name"]).strip().lower()
+    query, active, expired = render_query(r, (exceptions or {}).get(name_key),
+                                          allow_watchlist=False)
+    r["query"] = query
+    return r, {"active": active, "expired": expired}
 
 
 def xdr_body(r: dict, rule_id: str) -> dict:
@@ -490,8 +777,9 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
     tag = f"[{customer}][xdr]"
 
     rules = load_pack_rules(cfg)
+    exc_map = load_customer_exceptions(customer, "defender-xdr")
     existing = xdr_list_existing(secrets)
-    seen_names, failed = set(), []
+    seen_names, used_exc, failed = set(), set(), []
     deployed = uptodate = skipped = 0
 
     for rule in sorted(rules):
@@ -506,13 +794,19 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
             continue
 
         try:
-            r = xdr_load_rule(f)
+            r, meta = xdr_load_rule(f, exc_map)
         except Exception as e:
             print(f"{tag} ERRO em {f.name}: {e}")
             failed.append(f.name)
             continue
 
         key = str(r["name"]).strip().lower()
+        if key in exc_map:
+            used_exc.add(key)
+        if meta["expired"]:
+            print(f"{tag} AVISO    {f.name}: {meta['expired']} exceção(ões) vencida(s) ignorada(s)")
+        extra = f" [exceções: {meta['active']}]" if meta["active"] else ""
+
         if key in seen_names:
             print(f"{tag} ERRO: nome duplicado '{key}' ({f.name})")
             failed.append(f.name)
@@ -529,7 +823,7 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
             sent = {k: v for k, v in body.items() if k not in ("id", "@odata.type")}
             diff = differing_keys(sent, current["item"])
             if not diff and not scope.forced:
-                print(f"{tag} UPTODATE {f.name} (já implantada, sem alterações)")
+                print(f"{tag} UPTODATE {f.name} (já implantada, sem alterações){extra}")
                 uptodate += 1
                 continue
 
@@ -543,12 +837,17 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
 
         detail = f" (campos: {', '.join(diff)})" if diff else ""
         if res.returncode == 0:
-            print(f"{tag} OK       {action} {f.name}{detail}")
+            print(f"{tag} OK       {action} {f.name}{detail}{extra}")
             deployed += 1
         else:
             err = mask((res.stderr or res.stdout or "").strip(), secrets)
             print(f"{tag} FALHOU   {action} {f.name}\n{err[:1500]}")
             failed.append(f.name)
+
+    if scope.full:
+        for name in sorted(set(exc_map) - used_exc):
+            print(f"{tag} AVISO: há exceções para a regra '{name}', mas ela não está "
+                  f"nos packs deste cliente (nome errado?)")
 
     print(f"{tag} resumo: {deployed} implantada(s), {uptodate} já atualizada(s), "
           f"{skipped} ignorada(s), {len(failed)} com erro")
