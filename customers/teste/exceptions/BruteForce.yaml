@@ -5,10 +5,10 @@ exceptions:
     ticket: INC-1234
     expires: 2027-03-01
     when:
-      UserIdentityArn: { equals: "arn:aws:iam::111111111111:user/usuario1" }
+      UserPrincipalName: { equals: "usuario1" }
       UserAgent:       { contains: "Google" }
   - reason: Saída de internet do escritório
     ticket: INC-1400
     expires: 2027-06-30
     when:
-      SourceIpAddress: { in_range: ["203.0.113.0/24", "198.51.100.17"] }
+      IPAddress: { in_range: ["203.0.113.0/24", "198.51.100.17"] }
