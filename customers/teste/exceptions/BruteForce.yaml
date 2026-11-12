@@ -5,4 +5,4 @@ exceptions:
     ticket: INC-1234
     expires: 2027-03-01
     when:
-      SourceIpAddress: { in_watchlist: MeuIP }
+      IPAddress: { in_watchlist: MeuIP }
