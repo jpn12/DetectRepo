@@ -24,7 +24,7 @@ XDR_DIR = DETECTIONS_DIR / "defender-xdr"
 PLATFORM_NAMES = ("sentinel", "defender-xdr")
 
 # --- Sentinel ---
-SENTINEL_API_VERSION = "2025-07-01-preview"  # subTechniques exige versão mais nova que 2023-02-01
+SENTINEL_API_VERSION = "2024-03-01"  # subTechniques exige versão mais nova que 2023-02-01
 OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqual"}
 SENTINEL_KINDS = ("Scheduled", "NRT")
 SENTINEL_REQUIRED = ["name", "description", "severity", "query"]
@@ -325,6 +325,8 @@ def load_customer_exceptions(customer: str, platform: str) -> dict:
             data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
         except yaml.YAMLError:   # a mensagem do PyYAML pode conter trechos do arquivo
             raise DeployError(f"YAML inválido em {f.as_posix()}")
+        if not data:
+            continue                 # arquivo vazio ou só com comentários: nenhuma exceção
         if not isinstance(data, dict):
             raise DeployError(f"{f.as_posix()}: formato inválido")
         plat = str(data.get("platform", "sentinel"))
@@ -336,8 +338,10 @@ def load_customer_exceptions(customer: str, platform: str) -> dict:
         if not rule:
             raise DeployError(f"{f.as_posix()}: falta o campo 'rule'")
         excs = data.get("exceptions")
-        if not isinstance(excs, list) or not excs:
-            raise DeployError(f"{f.as_posix()}: 'exceptions' deve ser uma lista não vazia")
+        if excs is None or excs == []:
+            continue                 # lista esvaziada: sem exceções para esta regra
+        if not isinstance(excs, list):
+            raise DeployError(f"{f.as_posix()}: 'exceptions' deve ser uma lista")
         out.setdefault(rule.lower(), []).extend(excs)
     return out
 
@@ -352,12 +356,18 @@ def load_customer_overrides(customer: str, platform: str) -> dict:
         if f.suffix.lower() not in (".yaml", ".yml"):
             continue
         try:
-            data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+            data = yaml.safe_load(f.read_text(encoding="utf-8"))
         except yaml.YAMLError:
             raise DeployError(f"YAML inválido em {f.as_posix()}")
-        items = data.get("overrides") if isinstance(data, dict) else None
-        if not isinstance(items, list) or not items:
-            raise DeployError(f"{f.as_posix()}: 'overrides' deve ser uma lista não vazia")
+        if not data:
+            continue                 # arquivo vazio ou só com comentários: nenhum override
+        if not isinstance(data, dict):
+            raise DeployError(f"{f.as_posix()}: formato inválido")
+        items = data.get("overrides")
+        if items is None or items == []:
+            continue                 # lista esvaziada: nenhum override
+        if not isinstance(items, list):
+            raise DeployError(f"{f.as_posix()}: 'overrides' deve ser uma lista")
         for i, item in enumerate(items, 1):
             if not isinstance(item, dict):
                 raise DeployError(f"{f.as_posix()}: override #{i} deve ser um mapa")
