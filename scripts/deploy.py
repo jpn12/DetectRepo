@@ -52,6 +52,7 @@ MAX_LIST_VALUES = 500
 WATCHLIST_ALIAS_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 WATCHLIST_REF_RE = re.compile(r"_GetWatchlist\(\s*['\"]([^'\"]+)['\"]\s*\)")
 MAX_EXPIRY_DAYS = 365   # acima disso o validate.py apenas avisa
+OVERRIDE_KEYS = {"rule", "platform", "enabled", "reason", "ticket", "expires"}
 
 # --- Comparação ---
 DURATION_KEYS = {"queryFrequency", "queryPeriod", "suppressionDuration",
@@ -341,6 +342,62 @@ def load_customer_exceptions(customer: str, platform: str) -> dict:
     return out
 
 
+def load_customer_overrides(customer: str, platform: str) -> dict:
+    """Lê customers/<cliente>/overrides/*.yaml -> {nome da regra em minúsculas: override}."""
+    out = {}
+    d = Path("customers") / customer / "overrides"
+    if not d.is_dir():
+        return out
+    for f in sorted(d.rglob("*")):
+        if f.suffix.lower() not in (".yaml", ".yml"):
+            continue
+        try:
+            data = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        except yaml.YAMLError:
+            raise DeployError(f"YAML inválido em {f.as_posix()}")
+        items = data.get("overrides") if isinstance(data, dict) else None
+        if not isinstance(items, list) or not items:
+            raise DeployError(f"{f.as_posix()}: 'overrides' deve ser uma lista não vazia")
+        for i, item in enumerate(items, 1):
+            if not isinstance(item, dict):
+                raise DeployError(f"{f.as_posix()}: override #{i} deve ser um mapa")
+            unknown = sorted(set(map(str, item)) - OVERRIDE_KEYS)
+            if unknown:
+                raise DeployError(f"{f.as_posix()}: override #{i}: campo(s) não suportado(s): "
+                                  f"{', '.join(unknown)} (aceitos: {', '.join(sorted(OVERRIDE_KEYS))})")
+            plat = str(item.get("platform", "sentinel"))
+            if plat not in PLATFORM_NAMES:
+                raise DeployError(f"{f.as_posix()}: override #{i}: platform inválida")
+            if plat != platform:
+                continue
+            rule = str(item.get("rule", "")).strip()
+            if not rule:
+                raise DeployError(f"{f.as_posix()}: override #{i}: falta o campo 'rule'")
+            if rule.lower() in out:
+                raise DeployError(f"mais de um override para a regra '{rule}' ({platform})")
+            out[rule.lower()] = item
+    return out
+
+
+def override_state(item, today: date = None):
+    """Retorna (desativada, vencida). Levanta ValueError se o override for inválido."""
+    if not item:
+        return False, False
+    if item.get("enabled") is not False:
+        raise ValueError("override: 'enabled' deve ser false (só é possível desativar)")
+    for k in ("reason", "ticket", "expires"):
+        if not item.get(k):
+            raise ValueError(f"override: campo obrigatório ausente: '{k}'")
+    today = today or datetime.now(timezone.utc).date()
+    try:
+        expires = parse_expires(item["expires"])
+    except ValueError as e:
+        raise ValueError(f"override: {e}")
+    if expires < today:
+        return False, True
+    return True, False
+
+
 # =====================================================================================
 # Comparação: o que vamos enviar x o que já existe no ambiente
 # =====================================================================================
@@ -417,7 +474,7 @@ def differing_keys(sent: dict, actual: dict) -> list:
 # Microsoft Sentinel
 # =====================================================================================
 
-def sentinel_body(path: Path, exceptions: dict = None):
+def sentinel_body(path: Path, exceptions: dict = None, overrides: dict = None):
     """Monta o corpo da regra. Retorna (body, meta). 'exceptions' = {nome minúsculo: [...]}"""
     r = yaml.safe_load(path.read_text(encoding="utf-8"))
 
@@ -432,6 +489,7 @@ def sentinel_body(path: Path, exceptions: dict = None):
 
     name_key = str(r["name"]).strip().lower()
     query, active, expired = render_query(r, (exceptions or {}).get(name_key))
+    disabled, override_expired = override_state((overrides or {}).get(name_key))
     if len(query) > SENTINEL_MAX_QUERY:
         raise ValueError(f"query com {len(query)} caracteres (limite ~{SENTINEL_MAX_QUERY})"
                          f"{' após aplicar exceções' if active else ''}")
@@ -448,7 +506,7 @@ def sentinel_body(path: Path, exceptions: dict = None):
         "displayName": str(r["name"]).strip(),
         "description": str(r["description"]).strip(),
         "severity": r["severity"],
-        "enabled": r.get("enabled", True),
+        "enabled": False if disabled else r.get("enabled", True),
         "query": query,
         "suppressionDuration": r.get("suppressionDuration", "PT5H"),
         "suppressionEnabled": r.get("suppressionEnabled", False),
@@ -472,7 +530,9 @@ def sentinel_body(path: Path, exceptions: dict = None):
             "triggerThreshold": r.get("triggerThreshold", 0),
         })
 
-    return {"kind": kind, "properties": props}, {"active": active, "expired": expired}
+    return ({"kind": kind, "properties": props},
+            {"active": active, "expired": expired,
+             "disabled": disabled, "override_expired": override_expired})
 
 
 def sentinel_list_existing(sub: str, rg: str, ws: str) -> dict:
@@ -552,9 +612,10 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
 
     rules = load_pack_rules(cfg)
     exc_map = load_customer_exceptions(customer, "sentinel")
+    ov_map = load_customer_overrides(customer, "sentinel")
     existing = sentinel_list_existing(sub, rg, ws)
     wl_cache = {}   # watchlists do workspace, carregadas só se alguma regra precisar
-    seen_names, used_exc, failed = set(), set(), []
+    seen_names, used_exc, used_ov, failed = set(), set(), set(), []
     deployed = uptodate = skipped = 0
 
     for rule in sorted(rules):
@@ -572,9 +633,11 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
         peeked = peek_rule_name(f)
         if peeked in exc_map:
             used_exc.add(peeked)
+        if peeked in ov_map:
+            used_ov.add(peeked)
 
         try:
-            body, meta = sentinel_body(f, exc_map)
+            body, meta = sentinel_body(f, exc_map, ov_map)
         except Exception as e:
             print(f"{tag} ERRO em {f.name}: {e}")
             failed.append(f.name)
@@ -603,7 +666,11 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
                     continue
         if meta["expired"]:
             print(f"{tag} AVISO    {f.name}: {meta['expired']} exceção(ões) vencida(s) ignorada(s)")
+        if meta["override_expired"]:
+            print(f"{tag} AVISO    {f.name}: override de desativação vencido; regra mantida ATIVA")
         extra = f" [exceções: {meta['active']}]" if meta["active"] else ""
+        if meta["disabled"]:
+            extra += " [DESATIVADA por override]"
 
         if key in seen_names:
             print(f"{tag} ERRO: nome duplicado '{key}' ({f.name})")
@@ -661,6 +728,9 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
         for name in sorted(set(exc_map) - used_exc):
             print(f"{tag} AVISO: há exceções para a regra '{name}', mas ela não está "
                   f"nos packs deste cliente (nome errado?)")
+        for name in sorted(set(ov_map) - used_ov):
+            print(f"{tag} AVISO: há override para a regra '{name}', mas ela não está "
+                  f"nos packs deste cliente (nome errado?)")
 
     print(f"{tag} resumo: {deployed} implantada(s), {uptodate} já atualizada(s), "
           f"{skipped} ignorada(s), {len(failed)} com erro")
@@ -705,7 +775,7 @@ def normalize_tactics(tactics):
     return result
 
 
-def xdr_load_rule(path: Path, exceptions: dict = None):
+def xdr_load_rule(path: Path, exceptions: dict = None, overrides: dict = None):
     """Lê e valida o YAML. Retorna (regra, meta); a query já vem com as exceções aplicadas."""
     r = yaml.safe_load(path.read_text(encoding="utf-8"))
     missing = [k for k in XDR_REQUIRED if not r.get(k)]
@@ -726,7 +796,11 @@ def xdr_load_rule(path: Path, exceptions: dict = None):
     query, active, expired = render_query(r, (exceptions or {}).get(name_key),
                                           allow_watchlist=False)
     r["query"] = query
-    return r, {"active": active, "expired": expired}
+    disabled, override_expired = override_state((overrides or {}).get(name_key))
+    if disabled:
+        r["enabled"] = False
+    return r, {"active": active, "expired": expired,
+               "disabled": disabled, "override_expired": override_expired}
 
 
 def xdr_body(r: dict, rule_id: str) -> dict:
@@ -792,8 +866,9 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
 
     rules = load_pack_rules(cfg)
     exc_map = load_customer_exceptions(customer, "defender-xdr")
+    ov_map = load_customer_overrides(customer, "defender-xdr")
     existing = xdr_list_existing(secrets)
-    seen_names, used_exc, failed = set(), set(), []
+    seen_names, used_exc, used_ov, failed = set(), set(), set(), []
     deployed = uptodate = skipped = 0
 
     for rule in sorted(rules):
@@ -810,9 +885,11 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
         peeked = peek_rule_name(f)
         if peeked in exc_map:
             used_exc.add(peeked)
+        if peeked in ov_map:
+            used_ov.add(peeked)
 
         try:
-            r, meta = xdr_load_rule(f, exc_map)
+            r, meta = xdr_load_rule(f, exc_map, ov_map)
         except Exception as e:
             print(f"{tag} ERRO em {f.name}: {e}")
             failed.append(f.name)
@@ -823,7 +900,11 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
             used_exc.add(key)
         if meta["expired"]:
             print(f"{tag} AVISO    {f.name}: {meta['expired']} exceção(ões) vencida(s) ignorada(s)")
+        if meta["override_expired"]:
+            print(f"{tag} AVISO    {f.name}: override de desativação vencido; regra mantida ATIVA")
         extra = f" [exceções: {meta['active']}]" if meta["active"] else ""
+        if meta["disabled"]:
+            extra += " [DESATIVADA por override]"
 
         if key in seen_names:
             print(f"{tag} ERRO: nome duplicado '{key}' ({f.name})")
@@ -865,6 +946,9 @@ def deploy_xdr(customer: str, cfg: dict, scope: Scope) -> int:
     if scope.full:
         for name in sorted(set(exc_map) - used_exc):
             print(f"{tag} AVISO: há exceções para a regra '{name}', mas ela não está "
+                  f"nos packs deste cliente (nome errado?)")
+        for name in sorted(set(ov_map) - used_ov):
+            print(f"{tag} AVISO: há override para a regra '{name}', mas ela não está "
                   f"nos packs deste cliente (nome errado?)")
 
     print(f"{tag} resumo: {deployed} implantada(s), {uptodate} já atualizada(s), "

@@ -1,15 +1,3 @@
-"""Validação para Pull Requests. Não usa credenciais nem acessa nenhum ambiente.
-
-uso: python scripts/validate.py
-
-Verifica:
-  - todas as regras (Sentinel e Defender XDR): campos, MITRE, duração, kind
-  - nomes de regra únicos por plataforma
-  - marcador "// DAC:exceptions" x "exception_fields"
-  - packs e clientes apontando para regras/packs que existem
-  - exceções de cada cliente: formato, campos permitidos, IPs, validade e tamanho da query
-Os valores das exceções (IPs, usuários etc.) nunca são impressos.
-"""
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -24,6 +12,8 @@ def main() -> int:
     errors, warnings = [], []
 
     def err(msg):
+        if msg in errors:   # o mesmo arquivo é lido uma vez por plataforma
+            return
         errors.append(msg)
         print(f"ERRO:  {msg}")
 
@@ -139,6 +129,37 @@ def main() -> int:
                             continue
                         if exp - today > timedelta(days=deploy.MAX_EXPIRY_DAYS):
                             warn(f"[{customer}] {rule_path.name}: exceção #{i} vence em mais de "
+                                 f"{deploy.MAX_EXPIRY_DAYS} dias")
+
+    # ---------- 5. overrides por cliente (desativar regra só em um cliente) ----------
+    if customers_dir.is_dir():
+        for d in sorted(p for p in customers_dir.iterdir() if p.is_dir()):
+            customer = d.name
+            for plat in deploy.PLATFORM_NAMES:
+                try:
+                    ov_map = deploy.load_customer_overrides(customer, plat)
+                except deploy.DeployError as e:
+                    err(f"[{customer}] {e}")
+                    continue
+                for name, ov in ov_map.items():
+                    rule_path = rules[plat].get(name)
+                    if rule_path is None:
+                        err(f"[{customer}] override para regra inexistente em {plat}: '{name}'")
+                        continue
+                    try:
+                        if plat == "sentinel":
+                            _, meta = deploy.sentinel_body(rule_path, None, {name: ov})
+                        else:
+                            _, meta = deploy.xdr_load_rule(rule_path, None, {name: ov})
+                    except Exception as e:
+                        err(f"[{customer}] {rule_path.name}: {e}")
+                        continue
+                    if meta["override_expired"]:
+                        warn(f"[{customer}] {rule_path.name}: override de desativação vencido")
+                    else:
+                        exp = deploy.parse_expires(ov["expires"])
+                        if exp - today > timedelta(days=deploy.MAX_EXPIRY_DAYS):
+                            warn(f"[{customer}] {rule_path.name}: override vence em mais de "
                                  f"{deploy.MAX_EXPIRY_DAYS} dias")
 
     total = sum(len(v) for v in rules.values())
