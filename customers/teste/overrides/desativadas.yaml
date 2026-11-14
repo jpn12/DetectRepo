@@ -4,3 +4,10 @@ overrides:
     reason: Cliente teste não usa esse serviço
     ticket: INC-500
     expires: 2027-01-31
+
+overrides:
+  - rule: testando NRT              # igual ao "name:" da regra-base
+    enabled: false
+    reason: Falso positivos
+    ticket: INC-499
+    expires: 2027-01-31
