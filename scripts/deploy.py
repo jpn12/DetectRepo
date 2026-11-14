@@ -1,3 +1,27 @@
+"""Deploy de detecções para os clientes (Sentinel + Defender XDR) em um único script.
+
+uso:
+  python scripts/deploy.py <cliente>                 # todas as plataformas do cliente
+  python scripts/deploy.py <cliente> sentinel        # só Sentinel
+  python scripts/deploy.py <cliente> defender-xdr    # só Defender XDR
+
+Fluxo por plataforma: junta as regras dos packs do cliente, lê o que já existe no
+ambiente e só envia o que está ausente ou diferente.
+
+Exceções por cliente (tuning sem expor dados entre clientes):
+  customers/<cliente>/exceptions/*.yaml é compilado para KQL e injetado no marcador
+  "// DAC:exceptions" da regra, somente no ambiente desse cliente.
+
+Overrides por cliente (desativar uma regra só em um cliente):
+  customers/<cliente>/overrides/*.yaml  ->  a regra é implantada, porém desativada, só nesse
+  cliente, com motivo, ticket e validade obrigatórios.
+
+Variáveis de ambiente:
+  AZURE_SUBSCRIPTION_ID, RESOURCE_GROUP, WORKSPACE   (Sentinel)
+  AZURE_TENANT_ID                                    (usada para mascarar logs)
+  FORCE_FULL_DEPLOY=1   avalia todas as regras do cliente, mesmo sem mudança nos paths
+  FORCE_REDEPLOY=1      ignora a comparação e reenvia tudo o que estiver no escopo
+"""
 import ipaddress
 import json
 import os
@@ -24,7 +48,7 @@ XDR_DIR = DETECTIONS_DIR / "defender-xdr"
 PLATFORM_NAMES = ("sentinel", "defender-xdr")
 
 # --- Sentinel ---
-SENTINEL_API_VERSION = "2024-03-01"  # subTechniques exige versão mais nova que 2023-02-01
+SENTINEL_API_VERSION = "2025-07-01-preview"  # subTechniques exige versão mais nova que 2023-02-01
 OPERATORS = {"gt": "GreaterThan", "lt": "LessThan", "eq": "Equal", "ne": "NotEqual"}
 SENTINEL_KINDS = ("Scheduled", "NRT")
 SENTINEL_REQUIRED = ["name", "description", "severity", "query"]
