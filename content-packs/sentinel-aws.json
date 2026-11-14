@@ -3,6 +3,7 @@
   "description": "Detecções de AWS.",
   "content": [
     "detections/Sentinel/AWS/BruteForce.yaml",
-    "detections/Sentinel/AWS/Mine.yaml"
+    "detections/Sentinel/AWS/Mine.yaml",
+    "detections/Sentinel/AWS/newAWS.yaml"
   ]
 }
