@@ -1,6 +1,0 @@
-overrides:
-  - rule: Múltiplas falhas de login seguidas de sucesso              # igual ao "name:" da regra-base
-    enabled: false
-    reason: Cliente zubo não usa esse serviço
-    ticket: INC-500
-    expires: 2027-01-31
