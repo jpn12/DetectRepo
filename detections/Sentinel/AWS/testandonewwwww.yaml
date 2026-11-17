@@ -3,7 +3,7 @@ name: testandonewwwww
 exception_fields: []
 description: |
   hahahahahaha
-severity: Medium
+severity: High
 enabled: true
 queryFrequency: 5h
 queryPeriod: 5h
