@@ -3,7 +3,7 @@ exception_fields: []
 description: |
   Detecta possível VM Hijacking (sequestro de recursos computacionais) na AWS, a partir da criação de instâncias EC2 que sugerem abuso para cryptomining ou consumo indevido da conta.
 severity: High
-enabled: true
+enabled: false
 queryFrequency: 10m
 queryPeriod: 1h
 triggerOperator: gt
