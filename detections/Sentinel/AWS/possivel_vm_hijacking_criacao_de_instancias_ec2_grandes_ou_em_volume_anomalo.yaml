@@ -1,0 +1,29 @@
+id: 83573a90-5fac-446a-a1dd-4a5954feecf4
+name: Possível VM Hijacking criação de instâncias EC2 grandes ou em volume anômalo
+exception_fields: []
+description: |
+  Detecta possível VM Hijacking (sequestro de recursos computacionais) na AWS, a partir da criação de instâncias EC2 que sugerem abuso para cryptomining ou consumo indevido da conta.
+severity: High
+enabled: true
+queryFrequency: 5h
+queryPeriod: 5h
+triggerOperator: gt
+triggerThreshold: 0
+tactics:
+  - ImpairProcessControl
+  - Exfiltration
+  - LateralMovement
+relevantTechniques: []
+query: |
+  SecurityAlert
+  | take 1
+entityMappings: []
+eventGroupingSettings:  #Event Grouping
+  aggregationKind: AlertPerResult  # SingleAlert  ou AlertPerResult
+incidentConfiguration:  # Incident Configuration
+  createIncident: true  # true = cria incidente | false = só gera o alerta
+  groupingConfiguration:  # Mapeamento de IncidentGrouping
+    enabled: false  # agrupar alertas relacionados em um único incidente
+    reopenClosedIncident: false  # reabrir incidente fechado se surgir alerta relacionado
+    lookbackDuration: PT5H  # janela de agrupamento (PT5H = 5HRS)
+    matchingMethod: AllEntities  # AllEntities | AnyAlert | Selected
