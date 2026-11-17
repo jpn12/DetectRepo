@@ -4,7 +4,6 @@
   "content": [
     "detections/Sentinel/AWS/BruteForce.yaml",
     "detections/Sentinel/AWS/Mine.yaml",
-    "detections/Sentinel/AWS/newAWS.yaml",
-    "detections/Sentinel/AWS/possível_vm_hijacking_criação_de_instâncias_ec2_grandes_ou_em_volume_anômalo.yaml"
+    "detections/Sentinel/AWS/newAWS.yaml"
   ]
 }
