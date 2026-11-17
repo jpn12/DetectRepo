@@ -4,6 +4,7 @@
   "content": [
     "detections/Sentinel/AWS/BruteForce.yaml",
     "detections/Sentinel/AWS/Mine.yaml",
-    "detections/Sentinel/AWS/newAWS.yaml"
+    "detections/Sentinel/AWS/newAWS.yaml",
+    "detections/Sentinel/AWS/testandonewwwww.yaml"
   ]
 }

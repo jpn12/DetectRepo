@@ -1,0 +1,26 @@
+id: 53cb6c2c-611a-4ac3-a8ea-2b82f8028a06
+name: testandonewwwww
+exception_fields: []
+description: |
+  hahahahahaha
+severity: Medium
+enabled: true
+queryFrequency: 5h
+queryPeriod: 5h
+triggerOperator: gt
+triggerThreshold: 0
+tactics: []
+relevantTechniques: []
+query: |
+  SecurityAlert
+  | take 2
+entityMappings: []
+eventGroupingSettings:  #Event Grouping
+  aggregationKind: AlertPerResult  # SingleAlert  ou AlertPerResult
+incidentConfiguration:  # Incident Configuration
+  createIncident: true  # true = cria incidente | false = só gera o alerta
+  groupingConfiguration:  # Mapeamento de IncidentGrouping
+    enabled: false  # agrupar alertas relacionados em um único incidente
+    reopenClosedIncident: false  # reabrir incidente fechado se surgir alerta relacionado
+    lookbackDuration: PT5H  # janela de agrupamento (PT5H = 5HRS)
+    matchingMethod: AllEntities  # AllEntities | AnyAlert | Selected
