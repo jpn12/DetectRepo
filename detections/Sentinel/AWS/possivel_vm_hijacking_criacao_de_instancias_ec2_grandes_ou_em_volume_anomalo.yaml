@@ -3,7 +3,7 @@ name: Possível VM Hijacking criação de instâncias EC2 grandes ou em volume a
 exception_fields: []
 description: |
   Detecta possível VM Hijacking (sequestro de recursos computacionais) na AWS, a partir da criação de instâncias EC2 que sugerem abuso para cryptomining ou consumo indevido da conta.
-severity: High
+severity: Medium
 enabled: false
 queryFrequency: 5h
 queryPeriod: 5h
