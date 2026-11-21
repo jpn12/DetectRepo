@@ -1,27 +1,3 @@
-"""Deploy de detecções para os clientes (Sentinel + Defender XDR) em um único script.
-
-uso:
-  python scripts/deploy.py <cliente>                 # todas as plataformas do cliente
-  python scripts/deploy.py <cliente> sentinel        # só Sentinel
-  python scripts/deploy.py <cliente> defender-xdr    # só Defender XDR
-
-Fluxo por plataforma: junta as regras dos packs do cliente, lê o que já existe no
-ambiente e só envia o que está ausente ou diferente.
-
-Exceções por cliente (tuning sem expor dados entre clientes):
-  customers/<cliente>/exceptions/*.yaml é compilado para KQL e injetado no marcador
-  "// DAC:exceptions" da regra, somente no ambiente desse cliente.
-
-Overrides por cliente (desativar uma regra só em um cliente):
-  customers/<cliente>/overrides/*.yaml  ->  a regra é implantada, porém desativada, só nesse
-  cliente, com motivo, ticket e validade obrigatórios.
-
-Variáveis de ambiente:
-  AZURE_SUBSCRIPTION_ID, RESOURCE_GROUP, WORKSPACE   (Sentinel)
-  AZURE_TENANT_ID                                    (usada para mascarar logs)
-  FORCE_FULL_DEPLOY=1   avalia todas as regras do cliente, mesmo sem mudança nos paths
-  FORCE_REDEPLOY=1      ignora a comparação e reenvia tudo o que estiver no escopo
-"""
 import ipaddress
 import json
 import os
@@ -521,6 +497,13 @@ def sentinel_body(path: Path, exceptions: dict = None, overrides: dict = None):
     if missing:
         raise ValueError(f"campos obrigatórios ausentes: {', '.join(missing)}")
 
+    rule_guid = None
+    if r.get("id"):
+        try:
+            rule_guid = str(uuid.UUID(str(r["id"]).strip()))
+        except ValueError:
+            raise ValueError("id inválido (deve ser um GUID, ex.: 3f2b8c1e-9a4d-4e6b-8f21-7c5d0a1b2e34)")
+
     name_key = str(r["name"]).strip().lower()
     query, active, expired = render_query(r, (exceptions or {}).get(name_key))
     disabled, override_expired = override_state((overrides or {}).get(name_key))
@@ -566,16 +549,21 @@ def sentinel_body(path: Path, exceptions: dict = None, overrides: dict = None):
 
     return ({"kind": kind, "properties": props},
             {"active": active, "expired": expired,
-             "disabled": disabled, "override_expired": override_expired})
+             "disabled": disabled, "override_expired": override_expired,
+             "id": rule_guid})
 
 
-def sentinel_list_existing(sub: str, rg: str, ws: str) -> dict:
-    """Retorna {displayName em minúsculas: {"id", "kind", "properties"}} do workspace."""
+def sentinel_list_existing(sub: str, rg: str, ws: str):
+    """Retorna (por_nome, por_id) do workspace.
+
+    por_nome: {displayName em minúsculas: {"id", "name", "kind", "properties"}}
+    por_id:   {id em minúsculas: o mesmo dicionário}
+    """
     url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}"
            f"/providers/Microsoft.OperationalInsights/workspaces/{ws}"
            f"/providers/Microsoft.SecurityInsights/alertRules"
            f"?api-version={SENTINEL_API_VERSION}")
-    existing = {}
+    existing, by_id = {}, {}
     while url:
         r = subprocess.run(["az", "rest", "--method", "get", "--url", url, "-o", "json"],
                            capture_output=True, text=True)
@@ -589,10 +577,12 @@ def sentinel_list_existing(sub: str, rg: str, ws: str) -> dict:
             if dn:
                 if dn in existing:
                     print(f"AVISO: há mais de uma regra com o nome '{dn}' no workspace")
-                existing[dn] = {"id": item["name"], "kind": item.get("kind"),
-                                "properties": props}
+                entry = {"id": item["name"], "name": dn, "kind": item.get("kind"),
+                         "properties": props}
+                existing[dn] = entry
+                by_id[str(item["name"]).lower()] = entry
         url = data.get("nextLink")
-    return existing
+    return existing, by_id
 
 
 def peek_rule_name(path: Path) -> str:
@@ -647,7 +637,8 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
     rules = load_pack_rules(cfg)
     exc_map = load_customer_exceptions(customer, "sentinel")
     ov_map = load_customer_overrides(customer, "sentinel")
-    existing = sentinel_list_existing(sub, rg, ws)
+    existing, by_id = sentinel_list_existing(sub, rg, ws)
+    seen_ids = set()
     wl_cache = {}   # watchlists do workspace, carregadas só se alguma regra precisar
     seen_names, used_exc, used_ov, failed = set(), set(), set(), []
     deployed = uptodate = skipped = 0
@@ -712,7 +703,29 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
             continue
         seen_names.add(key)
 
-        current = existing.get(key)
+        yaml_id = meta["id"]
+        if yaml_id:
+            if yaml_id in seen_ids:
+                print(f"{tag} ERRO: id duplicado {yaml_id} ({f.name})")
+                failed.append(f.name)
+                continue
+            seen_ids.add(yaml_id)
+
+        # localiza a regra no workspace: primeiro pelo id do YAML, depois pelo nome
+        current, how = None, ""
+        if yaml_id and yaml_id in by_id:
+            current, how = by_id[yaml_id], "id"
+            other = existing.get(key)
+            if other is not None and other["id"].lower() != yaml_id:
+                print(f"{tag} ERRO: '{f.name}' tem o id de uma regra existente, mas o nome "
+                      f"já é usado por outra regra do workspace. Resolva o conflito antes.")
+                failed.append(f.name)
+                continue
+        elif key in existing:
+            current, how = existing[key], "nome"
+            if yaml_id and current["id"].lower() != yaml_id:
+                print(f"{tag} AVISO    {f.name}: o id do YAML difere do id da regra existente "
+                      f"com o mesmo nome; mantendo o id existente")
 
         # o tipo de uma regra existente não pode ser trocado (Scheduled <-> NRT)
         if current and current["kind"] and current["kind"] != kind:
@@ -730,7 +743,7 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
                 uptodate += 1
                 continue
 
-        rule_id = current["id"] if current else str(uuid.uuid4())
+        rule_id = current["id"] if current else (yaml_id or str(uuid.uuid4()))
         url = (f"https://management.azure.com/subscriptions/{sub}/resourceGroups/{rg}"
                f"/providers/Microsoft.OperationalInsights/workspaces/{ws}"
                f"/providers/Microsoft.SecurityInsights/alertRules/{rule_id}"
@@ -750,6 +763,8 @@ def deploy_sentinel(customer: str, cfg: dict, scope: Scope) -> int:
 
         action = "UPDATE" if current else "CREATE"
         detail = f" (campos: {', '.join(diff)})" if diff else ""
+        if how == "id" and current["name"] != key:
+            detail += " [renomeada no YAML]"
         if r.returncode == 0:
             print(f"{tag} OK       {action} [{kind}] {f.name}{detail}{extra}")
             deployed += 1

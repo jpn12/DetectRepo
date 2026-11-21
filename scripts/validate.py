@@ -1,3 +1,16 @@
+"""Validação para Pull Requests. Não usa credenciais nem acessa nenhum ambiente.
+
+uso: python scripts/validate.py
+
+Verifica:
+  - todas as regras (Sentinel e Defender XDR): campos, MITRE, duração, kind
+  - nomes de regra únicos por plataforma e ids (GUID) únicos e válidos
+  - marcador "// DAC:exceptions" x "exception_fields"
+  - packs e clientes apontando para regras/packs que existem
+  - exceções de cada cliente: formato, campos permitidos, IPs, validade e tamanho da query
+  - overrides de cada cliente (desativação de regra): formato, regra existente e validade
+Os valores das exceções (IPs, usuários etc.) nunca são impressos.
+"""
 import json
 import sys
 from datetime import datetime, timedelta, timezone
@@ -23,6 +36,7 @@ def main() -> int:
 
     today = datetime.now(timezone.utc).date()
     rules = {p: {} for p in deploy.PLATFORM_NAMES}   # plataforma -> {nome minúsculo: Path}
+    ids = {}                                           # id (GUID) -> Path, só Sentinel
 
     # ---------- 1. regras ----------
     for path in sorted(deploy.DETECTIONS_DIR.rglob("*")):
@@ -36,7 +50,11 @@ def main() -> int:
             continue
         try:
             if plat == "sentinel":
-                deploy.sentinel_body(path)
+                _, meta0 = deploy.sentinel_body(path)
+                if meta0["id"]:
+                    if meta0["id"] in ids:
+                        err(f"id duplicado {meta0['id']}: {ids[meta0['id']].name} e {path.name}")
+                    ids[meta0["id"]] = path
             else:
                 deploy.xdr_load_rule(path)
         except Exception as e:
